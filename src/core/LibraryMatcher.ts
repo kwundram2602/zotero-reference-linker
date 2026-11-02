@@ -21,6 +21,7 @@ export class LibraryMatcher {
   private byCompactTitle = new Map<string, LibraryRecord[]>();
   private byToken = new Map<string, Set<LibraryRecord>>();
   private byAuthorYear = new Map<string, LibraryRecord[]>();
+  private pdfChecks = new Map<LibraryRecord, Promise<number | undefined>>();
 
   constructor(private readonly zotero: ZoteroAPI) {}
 
@@ -32,6 +33,7 @@ export class LibraryMatcher {
     this.byCompactTitle.clear();
     this.byToken.clear();
     this.byAuthorYear.clear();
+    this.pdfChecks.clear();
 
     for (const item of items) {
       if (!item.isRegularItem()) continue;
@@ -43,10 +45,11 @@ export class LibraryMatcher {
         || this.field(item, "proceedingsTitle")
         || this.field(item, "publicationTitle")
         || undefined;
-      const pdfAttachmentID = item.getAttachments().find(id => {
+      const pdfAttachmentIDs = item.getAttachments().filter(id => {
         const attachment = this.zotero.Items.get(id);
         return attachment && attachment.attachmentContentType === "application/pdf";
       });
+      const pdfAttachmentID = pdfAttachmentIDs[0];
       const record: LibraryRecord = {
         item,
         title,
@@ -62,7 +65,8 @@ export class LibraryMatcher {
         pages: this.field(item, "pages") || undefined,
         articleNumber: this.field(item, "articleNumber") || undefined,
         itemType: this.itemType(item),
-        pdfAttachmentID
+        pdfAttachmentID,
+        pdfAttachmentIDs
       };
 
       for (const token of new Set(this.tokens(record.normalizedTitle))) {
@@ -76,6 +80,26 @@ export class LibraryMatcher {
       this.add(this.byCompactTitle, this.compact(record.normalizedTitle), record);
       if (record.firstAuthor && record.year) this.add(this.byAuthorYear, this.authorYearKey(record.firstAuthor, record.year), record);
     }
+  }
+
+  /**
+   * The first PDF attachment of a matched record whose file exists, or undefined. A linked file that was moved or
+   * deleted would otherwise show "↗ PDF" and fail on click. Checked lazily for matched records only, once per record.
+   */
+  availablePdf(record: LibraryRecord): Promise<number | undefined> {
+    let pending = this.pdfChecks.get(record);
+    if (!pending) {
+      pending = (async () => {
+        for (const id of record.pdfAttachmentIDs ?? (record.pdfAttachmentID ? [record.pdfAttachmentID] : [])) {
+          const attachment = this.zotero.Items.get(id);
+          if (!attachment) continue;
+          if (!attachment.fileExists || await attachment.fileExists()) return id;
+        }
+        return undefined;
+      })();
+      this.pdfChecks.set(record, pending);
+    }
+    return pending;
   }
 
   match(citation: ParsedCitation): MatchResult | undefined {
@@ -257,7 +281,8 @@ export class LibraryMatcher {
   }
 
   private year(value: string): number | undefined {
-    const match = value.match(/\b(19\d{2}|20\d{2})\b/);
+    // the date field holds only a date, so years before 1900 (classic literature) are safe to accept here
+    const match = value.match(/\b(1[5-9]\d{2}|20\d{2})\b/);
     return match ? Number(match[1]) : undefined;
   }
 }

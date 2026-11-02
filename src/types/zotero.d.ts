@@ -12,6 +12,17 @@ interface ZoteroItem {
   isRegularItem(): boolean;
   isAttachment(): boolean;
   attachmentContentType?: string;
+  fileExists?(): Promise<boolean>;
+}
+
+interface ZoteroLibrary {
+  libraryID: number;
+  libraryType: string;
+  name: string;
+}
+
+interface ZoteroNotifierObserver {
+  notify(event: string, type: string, ids: Array<number | string>, extraData: unknown): void;
 }
 
 interface ZoteroReader {
@@ -31,6 +42,17 @@ interface ZoteroAPI {
   };
   ItemTypes?: {
     getName(itemTypeID: number): string;
+  };
+  Libraries?: {
+    get(libraryID: number): ZoteroLibrary | false;
+    getAll(): ZoteroLibrary[];
+  };
+  Notifier?: {
+    registerObserver(observer: ZoteroNotifierObserver, types: string[], id?: string): string;
+    unregisterObserver(id: string): void;
+  };
+  Utilities?: {
+    Internal?: { copyTextToClipboard(text: string): void };
   };
   Reader: {
     registerEventListener(type: string, handler: (event: ReaderEvent) => void, pluginID: string): void;

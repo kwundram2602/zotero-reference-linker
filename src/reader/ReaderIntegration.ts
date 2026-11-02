@@ -1,8 +1,14 @@
 import { CitationParser } from "../core/CitationParser";
 import { LibraryMatcher } from "../core/LibraryMatcher";
 import { PdfSectionExtractor, type PdfDocument } from "../core/PdfSectionExtractor";
-import type { ReferenceSection } from "../core/types";
-import { ReferenceOverlay } from "./ReferenceOverlay";
+import type { MatchOutcome, MatchResult, ParsedCitation, ReferenceSection, ScanResult } from "../core/types";
+import { ReferenceOverlay, type UnmatchedReferenceAction } from "./ReferenceOverlay";
+
+/** Extra menu actions for an unmatched reference, given by the host plugin (setUnmatchedActions). */
+export type UnmatchedActionProvider = (
+  citation: ParsedCitation,
+  context: { reader: ZoteroReader; attachment: ZoteroItem }
+) => UnmatchedReferenceAction[];
 
 interface ReaderState {
   outerObserver?: MutationObserver;
@@ -18,6 +24,7 @@ interface ReaderState {
   summaryTimer?: number;
   sectionPromise?: Promise<ReferenceSection | undefined>;
   unloadHandler?: () => void;
+  result?: ScanResult;
 }
 
 export class ReaderIntegration {
@@ -27,17 +34,59 @@ export class ReaderIntegration {
   private readonly sectionExtractor = new PdfSectionExtractor();
   private readonly matcherCache = new Map<number, Promise<LibraryMatcher>>();
   private toolbarHandler = (event: ReaderEvent) => this.onToolbar(event);
+  private notifierID?: string;
+  private actionProvider?: UnmatchedActionProvider;
 
   constructor(private readonly zotero: ZoteroAPI, private readonly pluginID: string) {}
 
   start(): void {
     this.zotero.Reader.registerEventListener("renderToolbar", this.toolbarHandler, this.pluginID);
+    this.notifierID = this.zotero.Notifier?.registerObserver(
+      { notify: (event, _type, ids) => this.onItemsChanged(event, ids) },
+      ["item"],
+      "referenceLinker"
+    );
   }
 
   stop(): void {
     this.zotero.Reader.unregisterEventListener("renderToolbar", this.toolbarHandler);
+    if (this.notifierID) this.zotero.Notifier?.unregisterObserver(this.notifierID);
+    this.notifierID = undefined;
+    this.matcherCache.clear();
     for (const reader of this.readers) this.destroyReader(reader);
     this.readers.clear();
+  }
+
+  /** Let the host plugin add actions to the menu of unmatched references (e.g. "Add to Zotero"). */
+  setUnmatchedActions(provider?: UnmatchedActionProvider): void {
+    this.actionProvider = provider;
+  }
+
+  /** The references of the open PDF as last scanned; `rescan` scans first (e.g. after items were added). */
+  async scanResult(reader: ZoteroReader, rescan = false): Promise<ScanResult | undefined> {
+    const state = this.states.get(reader);
+    if (!state) return undefined;
+    if (rescan || !state.result) await this.scan(reader, true, true);
+    return state.result;
+  }
+
+  /**
+   * The library index is built once per library; items added, edited, trashed or deleted (or an attachment
+   * relinked) afterwards would never be matched. Drop the indexes and rescan the open readers. Notes and
+   * annotations (e.g. highlighting while reading) do not change what can be matched and are ignored.
+   */
+  private onItemsChanged(event: string, ids: Array<number | string>): void {
+    const relevant = event === "delete" || ids.some(id => {
+      const item = typeof id === "number" ? this.zotero.Items.get(id) : false;
+      return item && (item.isRegularItem() || item.isAttachment());
+    });
+    if (!relevant) return;
+    this.matcherCache.clear();
+    for (const reader of this.readers) {
+      const state = this.states.get(reader);
+      if (state) state.fingerprint = undefined;
+      this.scheduleScan(reader, 2000);
+    }
   }
 
   private onToolbar({ reader, doc, append }: ReaderEvent): void {
@@ -127,16 +176,22 @@ export class ReaderIntegration {
       const attachment = this.getAttachment(reader);
       if (!attachment) return undefined;
       const currentItemID = typeof attachment.parentID === "number" ? attachment.parentID : undefined;
-      const matcher = await this.getMatcher(attachment.libraryID);
+      const matchers = await this.getMatchers(attachment.libraryID);
+      const internal = this.zotero.Utilities?.Internal;
       if (!state.overlay || state.overlayDocument !== doc) {
         state.overlay?.destroy();
         state.overlay = new ReferenceOverlay(
           doc,
           match => void this.open(match.record.item.id, match.record.pdfAttachmentID),
-          url => this.zotero.launchURL(url)
+          url => this.zotero.launchURL(url),
+          // the reader iframe's navigator.clipboard is not reliably available; Zotero's helper always is
+          internal ? text => internal.copyTextToClipboard(text) : undefined
         );
         state.overlayDocument = doc;
       }
+      const provider = this.actionProvider;
+      state.overlay.setExtraActions(provider ? citation => provider(citation, { reader, attachment }) : undefined);
+      const result: ScanResult = { libraryID: attachment.libraryID, itemID: currentItemID, matched: [], unmatched: [] };
       state.overlay.clear();
       state.overlay.indexPages(section.startPage, section.endPage, section.startHeading, section.endHeading);
       let matchedItems = 0;
@@ -144,12 +199,13 @@ export class ReaderIntegration {
       let unmatchedItems = 0;
       for (const [position, reference] of section.references.entries()) {
         const citation = this.parser.parse(reference);
-        const outcome = matcher.matchWithOutcome(citation);
-        const match = outcome.match;
+        const { outcome, matcher } = this.matchAcross(matchers, citation);
+        const found = outcome.match;
         const referenceKey = reference.index == null ? `reference:${position}` : `index:${reference.index}`;
-        if (!match) {
+        if (!found || !matcher) {
           if (outcome.ambiguous) ambiguousItems++;
           else unmatchedItems++;
+          result.unmatched.push({ index: reference.index, citation, ambiguous: outcome.ambiguous });
           if (reference.index != null) {
             state.overlay.renderIndexedUnmatched(reference.index, citation, referenceKey);
           } else {
@@ -158,7 +214,9 @@ export class ReaderIntegration {
           continue;
         }
         matchedItems++;
-        if (match.record.item.id === currentItemID) continue;
+        if (found.record.item.id === currentItemID) continue;
+        const match = await this.displayedMatch(found, matcher, attachment.libraryID);
+        result.matched.push({ index: reference.index, citation, match });
         reference.index != null
           ? state.overlay.renderIndexed(reference.index, match, referenceKey)
           : state.overlay.renderTitle(citation.title || reference.raw, match, referenceKey);
@@ -172,6 +230,7 @@ export class ReaderIntegration {
       });
       this.zotero.debug(`Reference Linker: ${linked} links rendered; ${matchedItems} library items matched; source=${section.source}`);
       state.lastMatched = linked;
+      state.result = result;
       return linked;
     } catch (error) {
       this.zotero.logError(error);
@@ -249,6 +308,40 @@ export class ReaderIntegration {
       _internalReader?: { _primaryView?: { _iframeWindow?: Window & { PDFViewerApplication?: { pdfDocument?: PdfDocument } } } };
     })._internalReader;
     return internal?._primaryView?._iframeWindow?.PDFViewerApplication?.pdfDocument;
+  }
+
+  /**
+   * Matchers for the reader's own library first, then every other (group) library; feeds are skipped. A library
+   * that fails to index is left out rather than failing the scan.
+   */
+  private async getMatchers(libraryID: number): Promise<LibraryMatcher[]> {
+    const others = (this.zotero.Libraries?.getAll() || [])
+      .filter(library => library.libraryID !== libraryID && library.libraryType !== "feed")
+      .map(library => library.libraryID);
+    const own = await this.getMatcher(libraryID);
+    const settled = await Promise.allSettled(others.map(id => this.getMatcher(id)));
+    return [own, ...settled.flatMap(result => result.status === "fulfilled" ? [result.value] : [])];
+  }
+
+  /**
+   * The first library with a match wins. An ambiguous result also stops the search: if the reader's own library
+   * cannot decide, a single hit in some group library is no better evidence.
+   */
+  private matchAcross(matchers: LibraryMatcher[], citation: ParsedCitation): { outcome: MatchOutcome; matcher?: LibraryMatcher } {
+    for (const matcher of matchers) {
+      const outcome = matcher.matchWithOutcome(citation);
+      if (outcome.match || outcome.ambiguous) return { outcome, matcher };
+    }
+    return { outcome: { ambiguous: false } };
+  }
+
+  /** The match as shown: "↗ PDF" only if a PDF file exists, the library named if it is another one. */
+  private async displayedMatch(match: MatchResult, matcher: LibraryMatcher, ownLibraryID: number): Promise<MatchResult> {
+    const pdfAttachmentID = await matcher.availablePdf(match.record);
+    const libraryID = match.record.item.libraryID;
+    const library = libraryID !== ownLibraryID ? this.zotero.Libraries?.get(libraryID) : undefined;
+    const title = library ? `${match.record.title}\n(in ${library.name})` : match.record.title;
+    return { ...match, record: { ...match.record, pdfAttachmentID, title } };
   }
 
   private getMatcher(libraryID: number): Promise<LibraryMatcher> {

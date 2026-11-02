@@ -2,7 +2,10 @@ import { normalizeArxiv, normalizeContainerTitle, normalizeDOI, normalizeLocator
 import type { ParsedCitation, ReferenceBlock } from "./types";
 
 const YEAR = /\b(19\d{2}|20\d{2})[a-z]?\b/i;
-const CITATION_MARKER = /^\s*(?:\[\s*(?=[^\]\n]{0,24}\d)[A-Za-z0-9][A-Za-z0-9+.:/_\-\s]{0,23}\s*\]|\d+[.)]|\d+(?=\s+(?:[A-ZÀ-ÖØ-Þ](?:\.|\s)|Technical\b)))\s*/u;
+// Only used when no 19xx/20xx year is present: four-digit page numbers ("pp. 1823–1830") are far more common in
+// references than years before 1900, so older years must not win over a modern one.
+const OLD_YEAR = /\b(1[5-8]\d{2})[a-z]?\b/i;
+const CITATION_MARKER = /^\s*(?:\[\s*(?=[^\]\n]{0,24}\d)[A-Za-z0-9][A-Za-z0-9+.:/_\-\s]{0,23}\s*\]|\d+ ?[.)]|\d+(?=\s+(?:[A-ZÀ-ÖØ-Þ](?:\.|\s)|Technical\b)))\s*/u;
 const FULL_NAME_WORD = `(?:[A-ZÀ-ÖØ-Þ][\\p{L}'’-]+|[A-ZÀ-ÖØ-Þ]\\.?)`;
 const FULL_NAME = `[A-ZÀ-ÖØ-Þ][\\p{L}'’-]+(?:\\s+${FULL_NAME_WORD}){1,4}`;
 const INITIALS_AUTHOR = `(?:[A-ZÀ-ÖØ-Þ](?:-[A-ZÀ-ÖØ-Þ])?\\.\\s*){1,5}(?:(?:de|del|den|der|di|du|la|le|van|von)\\s+){0,3}[A-ZÀ-ÖØ-Þ][\\p{L}'’-]+`;
@@ -25,7 +28,7 @@ interface JournalMetadata {
 export class CitationParser {
   parse(reference: ReferenceBlock): ParsedCitation {
     const raw = reference.raw.replace(/[´`^¨]\s*/g, "").replace(/\s+/g, " ").trim();
-    const yearMatch = raw.match(YEAR);
+    const yearMatch = raw.match(YEAR) || raw.match(OLD_YEAR);
     const journal = this.extractJournalMetadata(raw, yearMatch);
     const title = journal?.titleless ? undefined : this.extractTitle(raw, yearMatch?.index);
     const containerTitle = journal?.containerTitle || this.extractContainerTitle(raw, title);
@@ -49,7 +52,7 @@ export class CitationParser {
 
   private extractFirstAuthor(raw: string): string | undefined {
     const citation = raw.replace(CITATION_MARKER, "");
-    const vancouver = citation.match(/^([A-ZÀ-ÖØ-Þ][\p{L}'’-]+)\s+[A-Z]{1,4}(?=\s*[,;.])/u);
+    const vancouver = citation.match(/^([A-ZÀ-ÖØ-Þ][\p{L}'’\u2010-]+)(?:\s+Jr\.?)?\s+[A-Z]{1,4}(?:-[A-Z]{1,2})?(?=\s*[,;.(])/u);
     if (vancouver?.[1]) return surname(vancouver[1]);
     const surnameFirst = citation.match(/^((?:(?:[Dd]e|[Dd]el|[Dd]en|[Dd]er|[Dd]i|[Dd]u|[Ll]a|[Ll]e|[Vv]an|[Vv]on)\s+){0,3}[A-ZÀ-ÖØ-Þ][\p{L}'’-]+(?:\s+[A-ZÀ-ÖØ-Þ][\p{L}'’-]+){0,2})\s*,/u);
     if (surnameFirst?.[1]) return surname(surnameFirst[1]);
@@ -75,6 +78,8 @@ export class CitationParser {
     if (quoted?.[1]) return this.clean(quoted[1]);
 
     const citation = raw.replace(CITATION_MARKER, "");
+    const yearParenTitle = this.extractYearParenTitle(citation);
+    if (yearParenTitle) return yearParenTitle;
     const mathematicalTitle = this.extractCommaDelimitedTitle(citation);
     if (mathematicalTitle) return mathematicalTitle;
     const commaTitle = citation.match(COMMA_TITLE);
@@ -97,6 +102,26 @@ export class CitationParser {
     const afterYear = yearIndex == null ? citation : citation.slice(yearIndex).replace(YEAR, "");
     const commaSegments = afterYear.split(/,\s+/).map(this.clean).filter(Boolean);
     return commaSegments.find(segment => segment.split(/\s+/).length >= 4);
+  }
+
+  /**
+   * Springer / APA order "Authors (2018) Title. Journal …" and "Authors (Eds.) (2023). Title. …": the title is the
+   * first sentence after the parenthesised year. Abbreviations such as "St." or "v." do not end it.
+   */
+  private extractYearParenTitle(citation: string): string | undefined {
+    const match = citation.match(/^([^()]{2,400}?)(?:\s*\([Ee]d(?:s|itors?)?\.?\))?\s*\((?:19|20)\d{2}[a-z]?\)[.:]?\s+([\p{Lu}“"[].*)$/su);
+    if (!match) return undefined;
+    const authors = this.clean(match[1]!);
+    // a year or "Authors: Title" before it: the parenthesised year closes the reference, it does not follow the authors
+    if (/\b(?:19|20)\d{2}\b|:\s/.test(authors)) return undefined;
+    const vancouver = /^[A-ZÀ-ÖØ-Þ][\p{L}'’\u2010-]+(?:\s+Jr\.?)?\s+[A-Z]{1,4}(?:-[A-Z]{1,2})?$/u.test(authors);
+    if (!vancouver && !this.looksLikeAuthors(authors) && authors.split(/\s+/).length > 8) return undefined;
+    const rest = match[2]!.replace(/^\[[^\]]{1,30}\]\s*/, "")
+      .replace(/\b(St|Mt|vs|v|vol|no|e\.g|i\.e|[A-Z])\.(?=\s)/g, "$1\u0000");
+    const title = this.clean(rest.split(/[.?!]\s+(?=[\p{Lu}\d“"]|In\b|https?:|doi\b)/u)[0]!.replace(/\u0000/g, ".")
+      .replace(/,\s*\d+(?:st|nd|rd|th)\s+ed$/i, ""));
+    const words = title.split(/\s+/).length;
+    return words >= 2 && words <= 40 && !/^(?:https?:|doi\b)/i.test(title) ? title : undefined;
   }
 
   private extractCommaDelimitedTitle(citation: string): string | undefined {

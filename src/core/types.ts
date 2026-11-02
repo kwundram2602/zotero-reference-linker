@@ -54,6 +54,8 @@ export interface LibraryRecord {
   articleNumber?: string;
   itemType?: string;
   pdfAttachmentID?: number;
+  /** All PDF attachments; the file of each is only checked once the record is matched (see availablePdf). */
+  pdfAttachmentIDs?: number[];
 }
 
 export interface MatchResult {
@@ -65,4 +67,13 @@ export interface MatchResult {
 export interface MatchOutcome {
   match?: MatchResult;
   ambiguous: boolean;
+}
+
+/** What the last scan of a reader found, for host plugins (ReaderIntegration.scanResult). */
+export interface ScanResult {
+  libraryID: number;
+  /** The parent item of the open PDF, if it has one. */
+  itemID?: number;
+  matched: Array<{ index?: number; citation: ParsedCitation; match: MatchResult }>;
+  unmatched: Array<{ index?: number; citation: ParsedCitation; ambiguous: boolean }>;
 }

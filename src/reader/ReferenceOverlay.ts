@@ -2,7 +2,9 @@ import type { MatchResult, ParsedCitation, ReferenceBlock } from "../core/types"
 
 export type UnmatchedReferenceAction =
   | { kind: "open"; label: "Open DOI" | "Search"; value: string }
-  | { kind: "copy"; label: "Copy title" | "Copy reference"; value: string };
+  | { kind: "copy"; label: "Copy title" | "Copy reference"; value: string }
+  /** Added by the host plugin (see ReferenceOverlay.setExtraActions), e.g. "Add to Zotero". */
+  | { kind: "run"; label: string; run: () => void | Promise<void> };
 
 export function unmatchedReferenceActions(citation: ParsedCitation): UnmatchedReferenceAction[] {
   const actions: UnmatchedReferenceAction[] = [];
@@ -49,6 +51,7 @@ export class ReferenceOverlay {
   private claimedElements = new WeakSet<Element>();
   private renderedReferences = new Set<string>();
   private menu?: HTMLElement;
+  private extraActions?: (citation: ParsedCitation) => UnmatchedReferenceAction[];
   private readonly clickHandler = (event: Event) => {
     const target = event.target instanceof this.doc.defaultView!.Element ? event.target : null;
     if (target?.closest(".reference-linker-menu")) return;
@@ -63,7 +66,7 @@ export class ReferenceOverlay {
     }
     const unmatched = target?.closest(".reference-linker-unmatched");
     const citation = unmatched ? this.unmatched.get(unmatched) : undefined;
-    if (!unmatched || !citation || !unmatchedReferenceActions(citation).length) {
+    if (!unmatched || !citation || !this.actionsFor(citation).length) {
       this.closeMenu();
       return;
     }
@@ -109,7 +112,7 @@ export class ReferenceOverlay {
       this.claimedElements.add(fragment.element);
       fragment.element.classList.add(match ? "reference-linker-hit" : "reference-linker-unmatched");
       if (match) this.hits.set(fragment.element, match);
-      else if (citation && unmatchedReferenceActions(citation).length) {
+      else if (citation && this.actionsFor(citation).length) {
         fragment.element.classList.add("reference-linker-actionable");
         this.unmatched.set(fragment.element, citation);
       }
@@ -253,6 +256,15 @@ export class ReferenceOverlay {
     return undefined;
   }
 
+  /** Further actions for unmatched references, offered after the built-in ones. */
+  setExtraActions(provider?: (citation: ParsedCitation) => UnmatchedReferenceAction[]): void {
+    this.extraActions = provider;
+  }
+
+  private actionsFor(citation: ParsedCitation): UnmatchedReferenceAction[] {
+    return [...unmatchedReferenceActions(citation), ...(this.extraActions?.(citation) ?? [])];
+  }
+
   destroy(): void {
     this.clear();
     this.doc.removeEventListener("click", this.clickHandler, true);
@@ -264,7 +276,7 @@ export class ReferenceOverlay {
     const menu = this.doc.createElement("div");
     menu.className = "reference-linker-menu";
     menu.setAttribute("role", "menu");
-    for (const action of unmatchedReferenceActions(citation)) {
+    for (const action of this.actionsFor(citation)) {
       const button = this.doc.createElement("button");
       button.type = "button";
       button.textContent = action.label;
@@ -275,6 +287,9 @@ export class ReferenceOverlay {
         if (action.kind === "open") {
           this.onOpenURL(action.value);
           this.closeMenu();
+        } else if (action.kind === "run") {
+          this.closeMenu();
+          void Promise.resolve().then(action.run).catch(() => undefined); // the host reports its own errors
         } else {
           const copying = this.onCopyText ? this.onCopyText(action.value) : this.copyText(action.value);
           void Promise.resolve(copying).then(() => this.closeMenu(), () => this.closeMenu());

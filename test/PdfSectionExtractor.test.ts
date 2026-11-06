@@ -324,4 +324,29 @@ describe("PdfSectionExtractor", () => {
     expect(result?.references).toHaveLength(4);
     expect(result?.references[1]?.raw).not.toContain("physically before");
   });
+
+  it("skips a table-of-contents entry and stops a book bibliography at the Index", async () => {
+    const document = pdf([
+      "Contents\n1 Introduction 1\n2 Linear Algebra 31\nBibliography 595\nIndex 637",
+      "Acknowledgments\nWe thank many people.",
+      "Chapter text",
+      "Bibliography\n"
+        + "Ackley, D. H., Hinton, G. E., and Sejnowski, T. J. (1985). A learning algorithm for Boltzmann machines. Cognitive Science, 9, 147-169. 553\n"
+        + "Alain, G. and Bengio, Y. (2013). What regularized auto-encoders learn from the data generating distribution. In ICLR'2013. 448, 466\n"
+        + "Zohrer, M. and Pernkopf, F. (2014). General stochastic networks for classification. In NIPS'2014. 590",
+      "Index\nAdagrad, 254\nAnnealed importance sampling, 533, 569\nBoltzmann machine, 420"
+    ]);
+    const result = await new PdfSectionExtractor().extract(document);
+    expect(result?.startPage).toBe(3);
+    expect(result?.references).toHaveLength(3);
+    expect(result?.references[2]?.raw).not.toContain("Adagrad");
+  });
+
+  it("keeps an Index Terms line inside the references", async () => {
+    const document = pdf([
+      "References\n[1] A. Author. A useful paper title. 2020.\nIndex Terms of something\n[2] B. Author. Another useful paper title. 2021.\n[3] C. Author. A third paper title. 2022."
+    ]);
+    const result = await new PdfSectionExtractor().extract(document);
+    expect(result?.references).toHaveLength(3);
+  });
 });

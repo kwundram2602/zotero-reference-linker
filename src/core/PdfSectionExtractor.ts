@@ -26,6 +26,10 @@ const LENIENT_REFERENCE_HEADING = /^\s*(?:\d{1,4}\.?\s+)?(reference|literatur|li
 const STOP_HEADING = /^\s*(?:\d{1,4}\s+)?(appendix|appendices|supplementary material|supplemental material|acknowledg(?:e)?ments?)(?:\s+\d{1,4})?\b/i;
 const ACKNOWLEDGEMENT_HEADING = /^\s*(?:\d{1,4}\s+)?acknowledg(?:e)?ments?(?:\s+\d{1,4})?\s*$/i;
 const LETTERED_STOP_HEADING = /^\s*A(?:\.\d+)?(?:\.\s*|\s+)(?=[\p{Lu}])[^,.;]{2,100}\s*$/u;
+// a book's index after the bibliography; the whole line only, so "Index Terms—…" does not stop
+const INDEX_HEADING = /^\s*(?:(?:subject|author|name)\s+)?index\s*$/i;
+// fewer references after a scanned heading: probably a table-of-contents entry, try the next heading
+const MIN_SCANNED_REFERENCES = 3;
 const LABELED_START = /(?:^|\n)\s*(?:\[\s*((?=[^\]\n]{0,24}\d)[A-Za-z0-9][A-Za-z0-9+.:/_\-\s]{0,23})\s*\]|((?!(?:18|19|20|21)\d{2}\b)\d{1,4}) ?[.)]|((?!(?:18|19|20|21)\d{2}\b)\d{1,4})(?=\s+(?:[A-ZÀ-ÖØ-Þ](?:\.|\s)|Technical\b)))(?:\s+|(?=\p{Lu}))/gu;
 const PARTICLE = `(?:[Dd]e|[Dd]el|[Dd]en|[Dd]er|[Dd]i|[Dd]u|[Ll]a|[Ll]e|[Vv]an|[Vv]on)\\s+`;
 const SURNAME = `(?:${PARTICLE}){0,3}[A-ZÀ-ÖØ-Þ][\\p{L}'’\u2010-]+(?:\\s+[A-ZÀ-ÖØ-Þ][\\p{L}'’\u2010-]+){0,2}`;
@@ -68,6 +72,18 @@ export class PdfSectionExtractor {
       if (!headingless) return undefined;
       return this.extractRange(pdf, headingless.startPage, pdf.numPages - 1, "heading-scan", headingless.startLine);
     }
+    const section = await this.extractScanned(pdf, scanned);
+    // A book's table of contents lists "Bibliography 595"; that hit yields (almost) no references, so try later ones.
+    if (section.references.length < MIN_SCANNED_REFERENCES) {
+      for (let next = await this.findByHeadings(pdf, REFERENCE_HEADING, scanned.startPage + 1); next; next = await this.findByHeadings(pdf, REFERENCE_HEADING, next.startPage + 1)) {
+        const candidate = await this.extractScanned(pdf, next);
+        if (candidate.references.length >= MIN_SCANNED_REFERENCES) return candidate;
+      }
+    }
+    return section;
+  }
+
+  private async extractScanned(pdf: PdfDocument, scanned: { startPage: number; endPage: number; startLine: number; endLine?: number }): Promise<ReferenceSection> {
     const section = await this.extractRange(pdf, scanned.startPage, scanned.endPage, "heading-scan", scanned.startLine, scanned.endLine);
     section.startHeading = "References";
     return section;
@@ -197,7 +213,7 @@ export class PdfSectionExtractor {
 
   private isStopHeading(line: string): boolean {
     const visible = this.visibleLine(line);
-    return STOP_HEADING.test(visible) || LETTERED_STOP_HEADING.test(visible);
+    return STOP_HEADING.test(visible) || LETTERED_STOP_HEADING.test(visible) || INDEX_HEADING.test(visible);
   }
 
   private visibleLine(line: string): string {

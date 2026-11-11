@@ -26,6 +26,8 @@ const LENIENT_REFERENCE_HEADING = /^\s*(?:\d{1,4}\.?\s+)?(reference|literatur|li
 const STOP_HEADING = /^\s*(?:\d{1,4}\s+)?(appendix|appendices|supplementary material|supplemental material|acknowledg(?:e)?ments?)(?:\s+\d{1,4})?\b/i;
 const ACKNOWLEDGEMENT_HEADING = /^\s*(?:\d{1,4}\s+)?acknowledg(?:e)?ments?(?:\s+\d{1,4})?\s*$/i;
 const LETTERED_STOP_HEADING = /^\s*A(?:\.\d+)?(?:\.\s*|\s+)(?=[\p{Lu}])[^,.;]{2,100}\s*$/u;
+// a line that cannot be the end of a reference: the next one continues it
+const OPEN_REFERENCE_LINE = /(?:[,:;\-–—‐]|\b(?:and|of|the|for|in|on|to|with|a|an))\s*$/i;
 // a book's index after the bibliography; the whole line only, so "Index Terms—…" does not stop
 const INDEX_HEADING = /^\s*(?:(?:subject|author|name)\s+)?index\s*$/i;
 // fewer references after a scanned heading: probably a table-of-contents entry, try the next heading
@@ -116,15 +118,18 @@ export class PdfSectionExtractor {
 
   private async findByHeadings(pdf: PdfDocument, heading = REFERENCE_HEADING, fromPage = 0): Promise<{ startPage: number; endPage: number; startLine: number; endLine?: number } | undefined> {
     let found: { startPage: number; startLine: number } | undefined;
+    let previousLine: string | undefined;
     for (let pageIndex = fromPage; pageIndex < pdf.numPages; pageIndex++) {
       const lines = await this.pageLines(pdf, pageIndex);
       if (!found) {
         const startLine = lines.findIndex(line => heading.test(this.visibleLine(line)));
         if (startLine >= 0) found = { startPage: pageIndex, startLine: startLine + 1 };
+        previousLine = lines.at(-1);
         continue;
       }
-      const stopLine = lines.findIndex(line => this.isStopHeading(line));
+      const stopLine = this.stopLineIndex(lines, previousLine);
       if (stopLine >= 0) return { ...found, endPage: pageIndex, endLine: stopLine };
+      previousLine = lines.at(-1) ?? previousLine;
     }
     return found ? { ...found, endPage: pdf.numPages - 1 } : undefined;
   }
@@ -175,6 +180,7 @@ export class PdfSectionExtractor {
   ): Promise<ReferenceSection> {
     const pages: string[] = [];
     let detectedEndPage = endPage;
+    let previousLine: string | undefined;
     for (let pageIndex = startPage; pageIndex <= endPage; pageIndex++) {
       let lines = await this.pageLines(pdf, pageIndex);
       if (pageIndex === startPage && startHeading) {
@@ -194,7 +200,7 @@ export class PdfSectionExtractor {
         pages.push(lines.slice(0, reorderedAcknowledgement).join("\n"));
         continue;
       }
-      const stopLine = lines.findIndex(line => this.isStopHeading(line));
+      const stopLine = this.stopLineIndex(lines, previousLine);
       if (stopLine >= 0) {
         lines = lines.slice(0, stopLine);
         detectedEndPage = pageIndex;
@@ -202,6 +208,7 @@ export class PdfSectionExtractor {
         break;
       }
       pages.push(lines.join("\n"));
+      previousLine = lines.at(-1) ?? previousLine;
     }
     return { startPage, endPage: detectedEndPage, references: this.splitReferences(pages.join("\n")), source };
   }
@@ -211,9 +218,24 @@ export class PdfSectionExtractor {
     return normalize(this.visibleLine(a)) === normalize(this.visibleLine(b));
   }
 
-  private isStopHeading(line: string): boolean {
+  /** First stop heading in `lines`; `before` is the line preceding `lines[0]` (end of the previous page). */
+  private stopLineIndex(lines: string[], before?: string): number {
+    return lines.findIndex((line, index) => this.isStopHeading(line, index ? lines[index - 1] : before));
+  }
+
+  private isStopHeading(line: string, previous?: string): boolean {
     const visible = this.visibleLine(line);
-    return STOP_HEADING.test(visible) || LETTERED_STOP_HEADING.test(visible) || INDEX_HEADING.test(visible);
+    if (STOP_HEADING.test(visible) || INDEX_HEADING.test(visible)) return true;
+    if (!LETTERED_STOP_HEADING.test(visible)) return false;
+    // "A Georeferenced Dataset to Train and Test …" is a wrapped title, not the appendix heading "A Proofs":
+    // it hangs under a reference label, or the line before it has not finished its reference.
+    return !line.startsWith(CONTINUATION_LINE) && !(previous != null && this.leavesReferenceOpen(previous));
+  }
+
+  private leavesReferenceOpen(line: string): boolean {
+    const visible = this.visibleLine(line).trim();
+    if (OPEN_REFERENCE_LINE.test(visible)) return true;
+    return (visible.match(/“/g)?.length || 0) > (visible.match(/”/g)?.length || 0);
   }
 
   private visibleLine(line: string): string {

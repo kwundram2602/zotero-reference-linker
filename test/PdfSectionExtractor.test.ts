@@ -325,6 +325,41 @@ describe("PdfSectionExtractor", () => {
     expect(result?.references[1]?.raw).not.toContain("physically before");
   });
 
+  it("does not take a wrapped title line starting with 'A' for a lettered appendix heading", async () => {
+    const list = [
+      "[1] D. Bonafilia, B. Tellman, T. Anderson, and E. Issenberg, “Sen1Floods11:",
+      "A Georeferenced Dataset to Train and Test Deep Learning Flood",
+      "Algorithms for Sentinel-1,” in Proc. IEEE/CVF Conf. Comput. Vis., 2020, pp. 210–211.",
+      "[2] C. Napper, Burned area emergency response treatments catalog. US",
+      "Forest Service, San Dimas Technology and Development Center, 2006.",
+      "[3] E. J. Hu et al., “LoRA: Low-rank adaptation of large language models,” 2021."
+    ];
+    const plain = await new PdfSectionExtractor().extract(pdf([
+      `References\n${list.join("\n")}\nA Visualisations\nAppendix content`
+    ]));
+    expect(plain?.references.map(reference => reference.index)).toEqual([1, 2, 3]);
+    expect(plain?.references[0]?.raw).toContain("Algorithms for Sentinel-1");
+    expect(plain?.references[2]?.raw).not.toContain("Appendix content");
+
+    // IEEE layout: continuation lines hang 18 pt under the label
+    const positioned: PdfDocument = {
+      numPages: 1,
+      async getPage() {
+        const item = (str: string, x: number, y: number) => ({ str, hasEOL: true, transform: [1, 0, 0, 1, x, y] });
+        return { async getTextContent() { return { items: [
+          item("References", 50, 700),
+          ...list.map((str, i) => item(str, str.startsWith("[") ? 50 : 68, 680 - 10 * i)),
+          item("A Visualisations", 50, 600),
+          item("Appendix content", 50, 590)
+        ] }; } };
+      }
+    };
+    const hanging = await new PdfSectionExtractor().extract(positioned);
+    expect(hanging?.references.map(reference => reference.index)).toEqual([1, 2, 3]);
+    expect(hanging?.references[0]?.raw).toContain("Algorithms for Sentinel-1");
+    expect(hanging?.references[2]?.raw).not.toContain("Appendix content");
+  });
+
   it("skips a table-of-contents entry and stops a book bibliography at the Index", async () => {
     const document = pdf([
       "Contents\n1 Introduction 1\n2 Linear Algebra 31\nBibliography 595\nIndex 637",

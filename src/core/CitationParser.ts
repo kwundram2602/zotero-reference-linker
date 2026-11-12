@@ -28,9 +28,9 @@ interface JournalMetadata {
 export class CitationParser {
   parse(reference: ReferenceBlock): ParsedCitation {
     const raw = reference.raw.replace(/[´`^¨]\s*/g, "").replace(/\s+/g, " ").trim();
-    const yearMatch = raw.match(YEAR) || raw.match(OLD_YEAR);
+    const yearMatch = this.findYear(raw, YEAR) || this.findYear(raw, OLD_YEAR);
     const journal = this.extractJournalMetadata(raw, yearMatch);
-    const title = journal?.titleless ? undefined : this.extractTitle(raw, yearMatch?.index);
+    const title = journal?.titleless ? undefined : this.trimTitle(this.extractTitle(raw, yearMatch?.index));
     const containerTitle = journal?.containerTitle || this.extractContainerTitle(raw, title);
     return {
       raw,
@@ -50,9 +50,36 @@ export class CitationParser {
     };
   }
 
+  /**
+   * The publication year: the first 19xx/20xx that is not part of a page range ("pp. 1929–1958") or an arXiv ID
+   * ("2010.01234"). A page number taken for the year made the matcher reject the right item.
+   */
+  private findYear(raw: string, pattern: RegExp): RegExpMatchArray | null {
+    for (const match of raw.matchAll(new RegExp(pattern.source, "giu"))) {
+      const before = raw.slice(0, match.index);
+      const after = raw.slice(match.index! + match[0].length);
+      if (/^\s*[-–—]\s*\d/.test(after) || /\d\s*[-–—]\s*$/.test(before)) continue;
+      if (/\b(?:pp?|pages?)\.?\s*$/i.test(before)) continue;
+      if (/^\.\d{4,5}/.test(after) || /(?:arxiv\s*:?|abs\/)\s*$/i.test(before)) continue;
+      return match;
+    }
+    return null;
+  }
+
+  /** "Title, 2025", "Title (2016)" and "Title, vol 4": the year or volume closing the reference is not part of the title. */
+  private trimTitle(title?: string): string | undefined {
+    if (!title) return title;
+    const trimmed = title
+      .replace(/(?:[,.]\s*\(?|\s*\()(?:19|20)\d{2}[a-z]?\)?$/i, "")
+      .replace(/,\s*vol\.?\s*\d+$/i, "")
+      .trim();
+    return trimmed.split(/\s+/).length >= 2 ? trimmed : title;
+  }
+
   private extractFirstAuthor(raw: string): string | undefined {
     const citation = raw.replace(CITATION_MARKER, "");
-    const vancouver = citation.match(/^([A-ZÀ-ÖØ-Þ][\p{L}'’\u2010-]+)(?:\s+Jr\.?)?\s+[A-Z]{1,4}(?:-[A-Z]{1,2})?(?=\s*[,;.(])/u);
+    // the Vancouver pattern ("Bishop CM, …") must skip "Adam J. Stewart, …" and "Christopher M. Bishop. 2006": an initial
+    const vancouver = citation.match(/^([A-ZÀ-ÖØ-Þ][\p{L}'’\u2010-]+)(?:\s+Jr\.?)?\s+[A-Z]{1,4}(?:-[A-Z]{1,2})?(?=\s*[,;.(])(?!\s*\.\s*(?:[A-Z]\.\s*)*[A-ZÀ-ÖØ-Þ][\p{L}'’-]+(?:\s*[,.]|\s+(?:and|&)\s))/u);
     if (vancouver?.[1]) return surname(vancouver[1]);
     const surnameFirst = citation.match(/^((?:(?:[Dd]e|[Dd]el|[Dd]en|[Dd]er|[Dd]i|[Dd]u|[Ll]a|[Ll]e|[Vv]an|[Vv]on)\s+){0,3}[A-ZÀ-ÖØ-Þ][\p{L}'’-]+(?:\s+[A-ZÀ-ÖØ-Þ][\p{L}'’-]+){0,2})\s*,/u);
     if (surnameFirst?.[1]) return surname(surnameFirst[1]);
@@ -66,6 +93,8 @@ export class CitationParser {
     if (fullNameFirst?.[1]) return surname(fullNameFirst[1]);
     const fullNameBeforeAnd = citation.match(new RegExp(`^(${FULL_NAME})\\s+(?:and|&)\\s+`, "u"));
     if (fullNameBeforeAnd?.[1]) return surname(fullNameBeforeAnd[1]);
+    const fullNameBeforeYear = citation.match(new RegExp(`^(${FULL_NAME})\\.\\s+\\(?(?:19|20)\\d{2}`, "u"));
+    if (fullNameBeforeYear?.[1]) return surname(fullNameBeforeYear[1]);
     if (CITATION_MARKER.test(raw)) {
       const fullNameBeforePeriod = citation.match(new RegExp(`^(${FULL_NAME})\\.\\s+`, "u"));
       if (fullNameBeforePeriod?.[1]) return surname(fullNameBeforePeriod[1]);

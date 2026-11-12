@@ -62,7 +62,9 @@ describe("years before 1900", () => {
     const matcher = matcherWith("1859-11-24", {});
     await matcher.index(1);
     expect(matcher.match(citation(1859))?.record.year).toBe(1859);
-    expect(matcher.match(citation(1950))).toBeUndefined();
+    // without an author to confirm it, another year is another work; with the same author it is another edition
+    expect(matcher.match({ ...citation(1950), firstAuthor: undefined })).toBeUndefined();
+    expect(matcher.match(citation(1950))?.record.year).toBe(1859);
   });
 
   it("parses an old year only when no modern year is present", () => {

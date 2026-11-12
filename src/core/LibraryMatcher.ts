@@ -59,6 +59,7 @@ export class LibraryMatcher {
         doi: normalizeDOI(this.field(item, "DOI") || extra),
         arxiv: normalizeArxiv(`${extra} ${this.field(item, "url")}`),
         year: this.year(this.field(item, "date")),
+        arxivYear: this.arxivYear(normalizeArxiv(`${extra} ${this.field(item, "url")}`)),
         firstAuthor: surname(creators[0]?.lastName || creators[0]?.name),
         volume: normalizeVolume(this.field(item, "volume")),
         issue: this.field(item, "issue") || undefined,
@@ -117,18 +118,18 @@ export class LibraryMatcher {
     }
     const bibliographic = this.matchBibliographic(citation);
     if (bibliographic) return bibliographic;
-    if (!citation.normalizedTitle || citation.normalizedTitle.length < 12) return { ambiguous: false };
+    if (!citation.normalizedTitle || citation.normalizedTitle.length < 12) return this.matchContained(citation) || { ambiguous: false };
 
     const exact = (this.byTitle.get(citation.normalizedTitle) || [])
       .map(record => this.scoreCandidate(record, citation, true))
       .filter((candidate): candidate is ScoredCandidate => Boolean(candidate));
-    if (exact.length) return this.resolve(exact, "title-exact")!;
+    if (exact.length) return this.resolve(exact, "title-exact", citation)!;
 
     const compactExact = (this.byCompactTitle.get(this.compact(citation.normalizedTitle)) || [])
       .filter(record => record.normalizedTitle !== citation.normalizedTitle)
       .map(record => this.scoreCandidate(record, citation, true))
       .filter((candidate): candidate is ScoredCandidate => Boolean(candidate));
-    if (compactExact.length) return this.resolve(compactExact, "title-exact")!;
+    if (compactExact.length) return this.resolve(compactExact, "title-exact", citation)!;
 
     const records = new Set<LibraryRecord>();
     for (const token of this.tokens(citation.normalizedTitle)) {
@@ -138,7 +139,40 @@ export class LibraryMatcher {
       .filter(record => record.normalizedTitle !== citation.normalizedTitle)
       .map(record => this.scoreCandidate(record, citation, false))
       .filter((candidate): candidate is ScoredCandidate => Boolean(candidate));
-    return this.resolve(fuzzy, "title-fuzzy") || { ambiguous: false };
+    return this.resolve(fuzzy, "title-fuzzy", citation) || this.matchContained(citation) || { ambiguous: false };
+  }
+
+  /**
+   * The reference text contains a library title as a whole phrase, by the same first author. Covers references whose
+   * title was not parsed ("Redmon, J.; Farhadi, A. YOLO9000: Better, Faster, Stronger. In …") or was parsed with
+   * extra words ("Introduction to Microwave Remote Sensing. Boca Raton"). The longest contained title wins, so DeepSORT
+   * is not taken for SORT; a title that is only part of a much longer parsed title ("Generative adversarial networks"
+   * in "Generative adversarial networks: an overview") is another work. Two-word titles also need the year.
+   */
+  private matchContained(citation: ParsedCitation): MatchOutcome | undefined {
+    const text = ` ${normalizeTitle(citation.raw)} `;
+    const records = new Set<LibraryRecord>();
+    for (const token of new Set(this.tokens(text.trim()))) {
+      for (const record of this.byToken.get(token) || []) records.add(record);
+    }
+    const contained = [...records].filter(record => {
+      const title = record.normalizedTitle;
+      if (title.split(" ").length < 2 || title.length < 8 || !text.includes(` ${title} `)) return false;
+      return !this.followedBySubtitle(title, citation.raw) && !this.extendsTitle(title, citation.title);
+    });
+    const longest = contained.filter(record => !contained.some(other =>
+      other.normalizedTitle.length > record.normalizedTitle.length && other.normalizedTitle.includes(record.normalizedTitle)));
+    const scored = longest.flatMap(record => {
+      const metadata = this.checkMetadata(record, citation, true);
+      if (!metadata?.authorMatch) return [];
+      if (this.shortTitle(record) && this.yearDistance(record, citation) > 1) return [];
+      return [{
+        record,
+        exact: true,
+        score: 0.9 + Number(metadata.yearMatch) * 0.04 + Number(metadata.containerMatch) * 0.05 + Number(metadata.itemTypeMatch) * 0.03
+      }];
+    });
+    return this.resolve(scored, "title-contained", citation);
   }
 
   private matchBibliographic(citation: ParsedCitation): MatchOutcome | undefined {
@@ -172,7 +206,7 @@ export class LibraryMatcher {
   }
 
   private scoreCandidate(record: LibraryRecord, citation: ParsedCitation, exact: boolean): ScoredCandidate | undefined {
-    const metadata = this.checkMetadata(record, citation);
+    const metadata = this.checkMetadata(record, citation, exact);
     if (!metadata) return undefined;
 
     let titleScore = 1;
@@ -196,12 +230,19 @@ export class LibraryMatcher {
     };
   }
 
-  private checkMetadata(record: LibraryRecord, citation: ParsedCitation): MetadataCheck | undefined {
-    const authorMatch = Boolean(citation.firstAuthor && record.firstAuthor && citation.firstAuthor === record.firstAuthor);
+  /**
+   * `wholeTitle`: the title matched as a whole (exact or contained), not fuzzily. Then another year is allowed when
+   * the first author agrees: another version of the same work, e.g. AlexNet cited as NIPS 2012 and in Zotero as its
+   * 2017 CACM reprint, or an arXiv preprint dated by its latest version.
+   */
+  private checkMetadata(record: LibraryRecord, citation: ParsedCitation, wholeTitle = false): MetadataCheck | undefined {
+    const authorMatch = Boolean(record.firstAuthor
+      && (citation.firstAuthor === record.firstAuthor || this.inFirstAuthor(record.firstAuthor, citation.raw)));
     if (citation.firstAuthor && record.firstAuthor && !authorMatch) return undefined;
 
-    const yearMatch = Boolean(citation.year && record.year && citation.year === record.year);
-    if (citation.year && record.year && Math.abs(citation.year - record.year) > 1) return undefined;
+    const years = this.yearDistance(record, citation);
+    const yearMatch = years === 0;
+    if (Number.isFinite(years) && years > 1 && !(wholeTitle && authorMatch && !this.shortTitle(record))) return undefined;
 
     const itemTypeMatch = Boolean(citation.itemTypeHint && record.itemType && citation.itemTypeHint === record.itemType);
 
@@ -214,7 +255,7 @@ export class LibraryMatcher {
     return { authorMatch, yearMatch, containerMatch, itemTypeMatch };
   }
 
-  private resolve(candidates: ScoredCandidate[], method: MatchResult["method"]): MatchOutcome | undefined {
+  private resolve(candidates: ScoredCandidate[], method: MatchResult["method"], citation?: ParsedCitation): MatchOutcome | undefined {
     candidates.sort((a, b) => b.score - a.score || a.record.item.id - b.record.item.id);
     let first = candidates[0];
     if (!first) return undefined;
@@ -223,11 +264,24 @@ export class LibraryMatcher {
       const tied = candidates.filter(candidate => first!.score - candidate.score < 0.06);
       const sameDOI = first.record.doi && tied.every(candidate => candidate.record.doi === first!.record.doi);
       const sameArxiv = first.record.arxiv && tied.every(candidate => candidate.record.arxiv === first!.record.arxiv);
-      if (!sameDOI && !sameArxiv) return { ambiguous: true };
-      first = tied.sort((a, b) =>
-        Number(Boolean(b.record.pdfAttachmentID)) - Number(Boolean(a.record.pdfAttachmentID))
-        || a.record.item.id - b.record.item.id
-      )[0]!;
+      if (sameDOI || sameArxiv) {
+        first = tied.sort((a, b) =>
+          Number(Boolean(b.record.pdfAttachmentID)) - Number(Boolean(a.record.pdfAttachmentID))
+          || a.record.item.id - b.record.item.id
+        )[0]!;
+      } else if (this.sameWork(tied.map(candidate => candidate.record))) {
+        // versions of one work (preprint and published paper, or a duplicate): the one closest to the citation
+        const distance = (record: LibraryRecord) => citation ? this.yearDistance(record, citation) : 0;
+        const typeMatch = (record: LibraryRecord) => Number(Boolean(citation?.itemTypeHint && citation.itemTypeHint === record.itemType));
+        first = tied.sort((a, b) =>
+          (distance(a.record) === distance(b.record) ? 0 : distance(a.record) < distance(b.record) ? -1 : 1)
+          || typeMatch(b.record) - typeMatch(a.record)
+          || Number(Boolean(b.record.pdfAttachmentID)) - Number(Boolean(a.record.pdfAttachmentID))
+          || a.record.item.id - b.record.item.id
+        )[0]!;
+      } else {
+        return { ambiguous: true };
+      }
     }
     return { match: { record: first.record, method, score: Math.min(first.score, 0.99) }, ambiguous: false };
   }
@@ -278,6 +332,73 @@ export class LibraryMatcher {
 
   private authorYearKey(author: string, year: number): string {
     return `${author}\u0000${year}`;
+  }
+
+  /**
+   * In the raw reference the title goes on with a subtitle ("Efficient Processing of Deep Neural Networks: A Tutorial
+   * and Survey"): a longer title, so another work than the library item without it (here a book by the same authors).
+   */
+  private followedBySubtitle(normalizedTitle: string, raw: string): boolean {
+    const found = this.findTitle(normalizedTitle, raw);
+    return Boolean(found && /^\s*(?::|[—–]|\s-)\s*[\p{L}\p{N}]/u.test(found.after));
+  }
+
+  /**
+   * The parsed title continues the library title with more words ("Principles of Vibration and Sound" around
+   * "Vibration and Sound"): a longer title, another work. A parsed title that only picked up authors or the venue
+   * around it ("and J. Sun. Deep residual learning for image recognition. In CVPR") is separated by a period.
+   */
+  private extendsTitle(normalizedTitle: string, parsedTitle?: string): boolean {
+    const found = parsedTitle ? this.findTitle(normalizedTitle, parsedTitle) : undefined;
+    if (!found) return false;
+    const left = found.before.trim() !== "" && !/[.!?"“”]\s*$/u.test(found.before);
+    const right = /^\s*[\p{L}\p{N}]/u.test(found.after);
+    return left || right;
+  }
+
+  /** `normalizedTitle` in `text`, its words separated by any punctuation; the text before and after it. */
+  private findTitle(normalizedTitle: string, text: string): { before: string; after: string } | undefined {
+    const plain = text.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase();
+    const words = normalizedTitle.split(" ").join("[^\\p{L}\\p{N}]+");
+    const match = plain.match(new RegExp(`(?<![\\p{L}\\p{N}])${words}(?![\\p{L}\\p{N}])`, "u"));
+    if (!match || match.index == null) return undefined;
+    return { before: plain.slice(0, match.index), after: plain.slice(match.index + match[0].length) };
+  }
+
+  /** "Network in Network", "Machine Learning": too unspecific to accept another year or a match without a year. */
+  private shortTitle(record: LibraryRecord): boolean {
+    return this.tokens(record.normalizedTitle).length < 3 || record.normalizedTitle.length < 15;
+  }
+
+  /** Same title (ignoring spaces and punctuation) and same first author: versions or duplicates of one work. */
+  private sameWork(records: LibraryRecord[]): boolean {
+    const [first] = records;
+    return Boolean(first?.firstAuthor) && records.every(record =>
+      record.firstAuthor === first!.firstAuthor && this.compact(record.normalizedTitle) === this.compact(first!.normalizedTitle));
+  }
+
+  /** Years between the citation and the closest of the record's years; Infinity when either has none. */
+  private yearDistance(record: LibraryRecord, citation: ParsedCitation): number {
+    const years = [record.year, record.arxivYear].filter((year): year is number => year != null);
+    if (!citation.year || !years.length) return Infinity;
+    return Math.min(...years.map(year => Math.abs(year - citation.year!)));
+  }
+
+  /**
+   * The surname occurs in the first author of the raw reference. The parsed firstAuthor can be a given name or glued
+   * to the next word in PDF text ("SainingXie, RossGirshick", "ChenLC"), which used to reject the right item.
+   */
+  private inFirstAuthor(name: string, raw: string): boolean {
+    const first = raw.replace(/^\s*(?:\[[^\]]{1,24}\]|\d+[.)]?)\s*/, "").split(/,|;|\(|\s(?:and|&)\s/)[0]!.slice(0, 60);
+    return normalizeTitle(first).split(" ").some(token => token === name
+      || (name.length >= 3 && token.length > name.length && (token.startsWith(name) || token.endsWith(name))));
+  }
+
+  private arxivYear(id?: string): number | undefined {
+    const match = id?.match(/^(\d{2})\d{2}\.\d{4,5}$/) || id?.match(/\/(\d{2})\d{5}$/);
+    if (!match) return undefined;
+    const year = Number(match[1]);
+    return year >= 91 ? 1900 + year : 2000 + year;
   }
 
   private year(value: string): number | undefined {

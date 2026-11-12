@@ -168,6 +168,28 @@ describe("CitationParser", () => {
     expect(result.year).toBe(1975);
   });
 
+  it("does not take a page range for the year", () => {
+    const jmlr = parser.parse(block("N. Srivastava, G. Hinton, A. Krizhevsky, I. Sutskever, and R. Salakhutdinov, \"Dropout: A simple way to prevent neural networks from overfitting,\" J. Mach. Learn. Res., vol. 15, no. 1, pp. 1929–1958, 2014."));
+    expect(jmlr.year).toBe(2014);
+    const pelee = parser.parse(block("R. J. Wang, X. Li, and C. X. Ling, \"Pelee: A real-time object detection system on mobile devices,\" in Proc. NIPS, pp. 1963-1972, 2018."));
+    expect(pelee.year).toBe(2018);
+    expect(parser.parse(block("A. Author. A paper title with words. arXiv:2010.01234, 2021.")).year).toBe(2021);
+  });
+
+  it("takes the surname, not the given name, of a full-name first author", () => {
+    expect(parser.parse(block("Adam J. Stewart, Caleb Robinson, and Isaac A. Corley. TorchGeo: Deep learning with geospatial data. In SIGSPATIAL, 2022.")).firstAuthor).toBe("stewart");
+    expect(parser.parse(block("Christopher M. Bishop. 2006. Pattern Recognition and Machine Learning. Springer.")).firstAuthor).toBe("bishop");
+    expect(parser.parse(block("Diederik P. Kingma and Jimmy Ba. Adam: A method for stochastic optimization. In ICLR, 2015.")).firstAuthor).toBe("kingma");
+    expect(parser.parse(block("Bishop CM, Nasrabadi NM (2006) Pattern recognition and machine learning. Springer, New York")).firstAuthor).toBe("bishop");
+  });
+
+  it("drops a year or volume that closes the title", () => {
+    const anysat = parser.parse(block("Guillaume Astruc, Nicolas Gonthier, Clement Mallet, and Loic Landrieu. Anysat: One earth observation model for many resolutions, scales, and modalities, 2025."));
+    expect(anysat.normalizedTitle).toBe("anysat one earth observation model for many resolutions scales and modalities");
+    const bishop = parser.parse(block("Bishop CM, Nasrabadi NM (2006) Pattern recognition and machine learning, vol 4. Springer, New York"));
+    expect(bishop.normalizedTitle).toBe("pattern recognition and machine learning");
+  });
+
   it("parses a Vancouver biomedical reference", () => {
     const result = parser.parse(block("Smith JA, Doe B. Biomarkers improve early disease detection in adults. J Med. 2020;12(3):100-110."));
     expect(result.firstAuthor).toBe("smith");

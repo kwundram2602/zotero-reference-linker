@@ -320,3 +320,75 @@ describe("LibraryMatcher", () => {
     expect(matcher.match(parsed)).toBeUndefined();
   });
 });
+
+describe("LibraryMatcher: versions and parse errors", () => {
+  const parse = (raw: string) => new CitationParser().parse({ raw, fragments: [] });
+  const alexnet = "A. Krizhevsky, I. Sutskever, and G. Hinton, \"Imagenet classification with deep convolutional neural networks,\" in Proc. Advances in Neural Information Processing Systems, 2012, pp. 1097–1105.";
+
+  it("matches another version of the same work: same title and first author, other year", async () => {
+    const matcher = await indexed([{ id: 1, title: "ImageNet classification with deep convolutional neural networks", author: "Krizhevsky", year: 2017 }]);
+    expect(matcher.match(parse(alexnet))?.record.item.id).toBe(1);
+  });
+
+  it("keeps rejecting another year when the first author differs", async () => {
+    const matcher = await indexed([{ id: 1, title: "ImageNet classification with deep convolutional neural networks", author: "Someone", year: 2017 }]);
+    expect(matcher.match(parse(alexnet))).toBeUndefined();
+  });
+
+  it("dates an arXiv preprint also by its ID", async () => {
+    const matcher = await indexed([{ id: 1, title: "Attention mechanisms are all you need for sequence transduction models", author: "Vaswani", year: 2023, arxiv: "1706.03762" }]);
+    // a fuzzy title would reject 2017 vs 2023; the arXiv ID says 2017
+    const result = matcher.match(citation("Attention mechanisms were all you need for sequence transduction models", { firstAuthor: "vaswani", year: 2017 }));
+    expect(result?.record.item.id).toBe(1);
+  });
+
+  it("accepts the surname from the raw text when the parsed first author is wrong", async () => {
+    const matcher = await indexed([{ id: 1, title: "Aggregated Residual Transformations for Deep Neural Networks", author: "Xie", year: 2017 }]);
+    const parsed = parse("SainingXie, RossGirshick, Piotr Dollár, ZhuowenTu, and Kaiming He. Aggregated residual transformations for deep neural networks. In CVPR, 2017.");
+    expect(matcher.match(parsed)?.record.item.id).toBe(1);
+  });
+
+  it("finds a library title inside a reference whose title was not parsed", async () => {
+    const matcher = await indexed([{ id: 1, title: "YOLO9000: Better, Faster, Stronger", author: "Redmon", year: 2016 }]);
+    const parsed = parse("Redmon, J.; Farhadi, A. YOLO9000: Better, Faster, Stronger. In Proceedings of the 30th IEEE Conference on Computer Vision and Pattern Recognition, Honolulu, HI, USA, 21–26 July 2017; pp. 6517–6525.");
+    const result = matcher.match(parsed);
+    expect(result?.record.item.id).toBe(1);
+  });
+
+  it("takes the longest contained title: DeepSORT, not SORT", async () => {
+    const matcher = await indexed([
+      { id: 1, title: "Simple Online and Realtime Tracking", author: "Wojke", year: 2016 },
+      { id: 2, title: "Simple Online and Realtime Tracking with a Deep Association Metric", author: "Wojke", year: 2017 }
+    ]);
+    const parsed = parse("N. Wojke , A. Bewley , D. Paulus , Simple online and realtime tracking with a deep association metric, in: Proceedings of the 2017 IEEE International Conference on Image Processing (ICIP), IEEE, 2017, pp. 3645–3649.");
+    expect(matcher.match(parsed)?.record.item.id).toBe(2);
+  });
+
+  it("matches a two-word title only with author and year", async () => {
+    const matcher = await indexed([{ id: 1, title: "Network In Network", author: "Lin", year: 2014 }]);
+    expect(matcher.match(parse("M. Lin, Q. Chen, and S. Yan. Network in network. In ICLR, 2014."))?.record.item.id).toBe(1);
+    expect(matcher.match(parse("M. Lin, Q. Chen, and S. Yan. Network in network. In ICLR, 2019."))).toBeUndefined();
+  });
+
+  it("picks one of two versions of a work instead of calling it ambiguous", async () => {
+    const matcher = await indexed([
+      { id: 1, title: "You Only Look Once: Unified, Real-Time Object Detection", author: "Redmon", year: 2016, doi: "10.48550/arXiv.1506.02640", pdf: true },
+      { id: 2, title: "You Only Look Once: Unified, Real-Time Object Detection", author: "Redmon", year: 2016, doi: "10.1109/cvpr.2016.91" }
+    ]);
+    const outcome = matcher.matchWithOutcome(parse("J. Redmon, S. Divvala, R. Girshick, and A. Farhadi, \"You only look once: Unified, real-time object detection,\" in Proc. CVPR, 2016, pp. 779–788."));
+    expect(outcome.ambiguous).toBe(false);
+    expect([1, 2]).toContain(outcome.match?.record.item.id);
+  });
+
+  it("does not link a longer title by another author to a contained library title", async () => {
+    const matcher = await indexed([{ id: 1, title: "Generative Adversarial Networks", author: "Goodfellow", year: 2014 }]);
+    expect(matcher.match(parse("A. Creswell, T. White, V. Dumoulin, K. Arulkumaran, B. Sengupta, and A. A. Bharath, \"Generative adversarial networks: An overview,\" IEEE Signal Process. Mag., vol. 35, no. 1, pp. 53–65, 2018."))).toBeUndefined();
+    expect(matcher.match(parse("J. Li, X. Liang, Y. Wei, T. Xu, J. Feng, and S. Yan, \"Perceptual generative adversarial networks for small object detection,\" in Proc. CVPR, 2017, pp. 1222–1230."))).toBeUndefined();
+    expect(matcher.match(parse("I. Goodfellow, \"Generative adversarial networks: An overview of my own work,\" 2018."))).toBeUndefined();
+  });
+
+  it("does not take a book for the same author's survey that adds a subtitle", async () => {
+    const matcher = await indexed([{ id: 1, title: "Efficient Processing of Deep Neural Networks", author: "Sze", year: 2020, itemType: "book" }]);
+    expect(matcher.match(parse("Vivienne Sze, Yu-Hsin Chen, Tien-Ju Yang, and Joel S. Emer. 2017. Efficient Processing of Deep Neural Networks: A Tutorial and Survey. Proc. IEEE 105, 12 (2017), 2295-2329."))).toBeUndefined();
+  });
+});

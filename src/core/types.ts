@@ -47,6 +47,8 @@ export interface LibraryRecord {
   containerTitle?: string;
   normalizedContainerTitle?: string;
   year?: number;
+  /** The year of an arXiv ID (1706.03762 -> 2017): Zotero dates a preprint by its latest version. */
+  arxivYear?: number;
   firstAuthor?: string;
   volume?: string;
   issue?: string;
@@ -60,7 +62,7 @@ export interface LibraryRecord {
 
 export interface MatchResult {
   record: LibraryRecord;
-  method: "doi" | "arxiv" | "bibliographic" | "title-exact" | "title-fuzzy";
+  method: "doi" | "arxiv" | "bibliographic" | "title-exact" | "title-fuzzy" | "title-contained";
   score: number;
 }
 

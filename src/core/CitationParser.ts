@@ -14,6 +14,8 @@ const FULL_NAME_LIST = new RegExp(`^${FULL_NAME}(?:,\\s*${FULL_NAME})*(?:,?\\s+(
 const CONFERENCE_WORD = /\b(?:conference|workshop|symposium)\b|\bproc(?:eedings)?\.?(?=\s|,|$)/i;
 const CONFERENCE_ACRONYM_AFTER_IN = /\bin\s+(?:the\s+)?(?:proc(?:eedings)?\.?\s+(?:of\s+)?(?:the\s+)?)?[A-Z][A-Z0-9&-]{2,}\b/;
 const CONFERENCE_ACRONYM_WITH_YEAR = /\b[A-Z][A-Z0-9&/-]{2,}\s+(?:19|20)\d{2}[a-z]?\b/;
+// a sentence of a reference that is not its title: identifiers, pages, or the venue ("In: European conference …")
+const VENUE_SEGMENT = /^(?:doi|arxiv|vol|pp|https?|in\s*:|in\s+(?:proceedings|proc\.|conference|journal))/i;
 const BOOK_SECTION_CONTEXT = /\b(?:chapter|isbn)\b|\b(?:ed|eds|editor|editors)\.?\s*(?:[,;)]|$)|\b(?:academic\s+press|university\s+press|springer|elsevier|wiley|routledge|sage|palgrave|crc\s+press)\b/i;
 
 interface JournalMetadata {
@@ -113,6 +115,8 @@ export class CitationParser {
     if (mathematicalTitle) return mathematicalTitle;
     const commaTitle = citation.match(COMMA_TITLE);
     if (commaTitle?.[1] && commaTitle[1].split(/\s+/).length >= 3) return this.clean(commaTitle[1]);
+    const colonTitle = this.extractColonTitle(citation);
+    if (colonTitle) return colonTitle;
     const afterAuthors = this.extractAfterAuthors(citation);
     if (afterAuthors) return afterAuthors;
     const protectedCitation = citation.replace(/\b([A-Z])\.\s*/g, "$1\u0000");
@@ -122,7 +126,9 @@ export class CitationParser {
       .filter(Boolean);
     const candidate = segments.find((segment, index) => {
       const words = segment.split(/\s+/).length;
-      if (words < 3 || words > 40 || /^(doi|arxiv|vol|pp|https?|in\s+(proceedings|proc\.|conference|journal))/i.test(segment)) return false;
+      // "Bishop, C. M. 1999. Bayesian PCA. In: …": a two-word title right after the year
+      const afterYear = index > 0 && /\b(?:19|20)\d{2}[a-z]?\)?$/.test(segments[index - 1]!);
+      if (words < (afterYear ? 2 : 3) || words > 40 || VENUE_SEGMENT.test(segment)) return false;
       if (index === 0 && this.looksLikeAuthors(segment)) return false;
       return !/^\(?\s*(?:19|20)\d{2}[a-z]?\s*\)?$/i.test(segment);
     });
@@ -212,6 +218,19 @@ export class CitationParser {
     );
   }
 
+  /**
+   * Springer LNCS "Zeiler, M.D., Fergus, R.: Visualizing and understanding convolutional networks. In: European
+   * conference on computer vision (2014)": the title follows the colon after the last author's initial (or "et al.").
+   */
+  private extractColonTitle(citation: string): string | undefined {
+    const match = citation.match(/^(.{2,400}?(?:\b[A-ZÀ-ÖØ-Þ]\.|\bet\s+al\.?))\s*:\s+(\S.*)$/su);
+    if (!match || !this.looksLikeAuthors(match[1]!)) return undefined;
+    const rest = match[2]!.replace(/\b(St|Mt|vs|v|vol|no|e\.g|i\.e|[A-Z])\.(?=\s)/g, "$1\u0000");
+    const title = this.clean(rest.split(/[.?!]\s+(?=[\p{Lu}\d“"]|In\b|https?:|doi\b)/u)[0]!.replace(/\u0000/g, "."));
+    const words = title.split(/\s+/).length;
+    return words >= 2 && words <= 40 && !VENUE_SEGMENT.test(title) ? title : undefined;
+  }
+
   private extractAfterAuthors(citation: string): string | undefined {
     for (const boundary of citation.matchAll(/\.\s+(?=[A-ZÀ-ÖØ-Þ\d])/gu)) {
       const prefix = citation.slice(0, boundary.index);
@@ -223,6 +242,8 @@ export class CitationParser {
       let title = segments[0] || "";
       if (/:\s*[IVXLCDM]+$/i.test(title) && segments[1]) title += `. ${segments[1]}`;
       const candidate = this.clean(title);
+      // the venue follows the title: past "In: …" no sentence is the title any more
+      if (/^in\s*:/i.test(candidate)) return undefined;
       const words = candidate.split(/\s+/).filter(Boolean).length;
       if (words < 2 || words > 40 || (words === 2 && normalizeTitle(candidate).length < 12) || this.looksLikeAuthors(candidate)) continue;
       if (/^(?:[A-ZÀ-ÖØ-Þ]\.\s*|\(?\s*(?:19|20)\d{2})/u.test(candidate)) continue;

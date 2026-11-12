@@ -183,6 +183,19 @@ describe("CitationParser", () => {
     expect(parser.parse(block("Bishop CM, Nasrabadi NM (2006) Pattern recognition and machine learning. Springer, New York")).firstAuthor).toBe("bishop");
   });
 
+  it("takes the title after the authors' colon in Springer LNCS references, not the venue", () => {
+    const zeiler = parser.parse(block("41. Zeiler, M.D., Fergus, R.: Visualizing and understanding convolutional networks. In: European conference on computer vision, Springer (2014) 818–833"));
+    expect(zeiler.title).toBe("Visualizing and understanding convolutional networks");
+    expect(zeiler.firstAuthor).toBe("zeiler");
+    const coco = parser.parse(block("Lin, T.Y., et al.: Microsoft COCO: Common objects in context. In: ECCV. (2014)"));
+    expect(coco.title).toBe("Microsoft COCO: Common objects in context");
+  });
+
+  it("never takes the 'In:' venue for the title", () => {
+    expect(parser.parse(block("Bishop, Christopher M. 1999. Bayesian PCA. In: Advances in Neural Information Processing Systems.")).title).toBe("Bayesian PCA");
+    expect(parser.parse(block("Kingma, Diederik P., and Welling, Max. 2014. Auto-Encoding Variational Bayes. In: Proceedings of the International Conference on Learning Representations.")).title).toBe("Auto-Encoding Variational Bayes");
+  });
+
   it("drops a year or volume that closes the title", () => {
     const anysat = parser.parse(block("Guillaume Astruc, Nicolas Gonthier, Clement Mallet, and Loic Landrieu. Anysat: One earth observation model for many resolutions, scales, and modalities, 2025."));
     expect(anysat.normalizedTitle).toBe("anysat one earth observation model for many resolutions scales and modalities");

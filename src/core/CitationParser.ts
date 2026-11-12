@@ -8,14 +8,19 @@ const OLD_YEAR = /\b(1[5-8]\d{2})[a-z]?\b/i;
 const CITATION_MARKER = /^\s*(?:\[\s*(?=[^\]\n]{0,24}\d)[A-Za-z0-9][A-Za-z0-9+.:/_\-\s]{0,23}\s*\]|\d+ ?[.)]|\d+(?=\s+(?:[A-ZÀ-ÖØ-Þ](?:\.|\s)|Technical\b)))\s*/u;
 const FULL_NAME_WORD = `(?:[A-ZÀ-ÖØ-Þ][\\p{L}'’-]+|[A-ZÀ-ÖØ-Þ]\\.?)`;
 const FULL_NAME = `[A-ZÀ-ÖØ-Þ][\\p{L}'’-]+(?:\\s+${FULL_NAME_WORD}){1,4}`;
-const INITIALS_AUTHOR = `(?:[A-ZÀ-ÖØ-Þ](?:-[A-ZÀ-ÖØ-Þ])?\\.\\s*){1,5}(?:(?:de|del|den|der|di|du|la|le|van|von)\\s+){0,3}[A-ZÀ-ÖØ-Þ][\\p{L}'’-]+`;
-const COMMA_TITLE = new RegExp(`^(?:${INITIALS_AUTHOR}\\s*,\\s*)+(?:and\\s+${INITIALS_AUTHOR}\\s*,\\s*)?([^,]{12,240})\\s*,\\s*(?=[A-Z])`, "iu");
+// initials, also hyphenated ones: "J.-B. Huang", "C.-C. J. Kuo", "J.- P. Wigneron"
+const INITIALS_AUTHOR = `(?:[A-ZÀ-ÖØ-Þ](?:\\.?\\s?-\\s?[A-ZÀ-ÖØ-Þ])?\\.\\s*){1,5}(?:(?:de|del|den|der|di|du|la|le|van|von)\\s+){0,3}[A-ZÀ-ÖØ-Þ][\\p{L}'’-]+`;
+// the title must not be another author: "…, D. Henderson, R. E. Howard, W. Hubbard, and L. D. Jackel. Title. …" has
+// no comma after the last author, and backtracking used to make "R. E. Howard" the title
+const ET_AL = `(?:,?\\s+et\\s+al\\.?)?`;
+const COMMA_TITLE = new RegExp(`^(?:${INITIALS_AUTHOR}${ET_AL}\\s*,\\s*)+(?:and\\s+${INITIALS_AUTHOR}\\s*,\\s*)?(?!\\s|et\\s+al\\b|(?:and\\s+)?${INITIALS_AUTHOR}${ET_AL}\\s*(?:,|\\.|$))([^,]{12,240})\\s*,\\s*(?=[A-Z]|\\(?(?:19|20)\\d{2}\\b)`, "iu");
 const FULL_NAME_LIST = new RegExp(`^${FULL_NAME}(?:,\\s*${FULL_NAME})*(?:,?\\s+(?:and|&)\\s+${FULL_NAME})?$`, "u");
 const CONFERENCE_WORD = /\b(?:conference|workshop|symposium)\b|\bproc(?:eedings)?\.?(?=\s|,|$)/i;
 const CONFERENCE_ACRONYM_AFTER_IN = /\bin\s+(?:the\s+)?(?:proc(?:eedings)?\.?\s+(?:of\s+)?(?:the\s+)?)?[A-Z][A-Z0-9&-]{2,}\b/;
 const CONFERENCE_ACRONYM_WITH_YEAR = /\b[A-Z][A-Z0-9&/-]{2,}\s+(?:19|20)\d{2}[a-z]?\b/;
 // a sentence of a reference that is not its title: identifiers, pages, or the venue ("In: European conference …")
-const VENUE_SEGMENT = /^(?:doi|arxiv|vol|pp|https?|in\s*:|in\s+(?:proceedings|proc\.|conference|journal))/i;
+// "pp. 12" and "vol. 3" need the number: "PP-YOLO: An effective …" is a title
+const VENUE_SEGMENT = /^(?:(?:doi|arxiv)\b|vol\.?\s*\d|pp?\.?\s*\d|https?:|in\s*:|in\s+(?:the\s+)?(?:proceedings|proc\.|conference|journal|advances\s+in|international|annual|european|ieee|acm|workshop))/i;
 const BOOK_SECTION_CONTEXT = /\b(?:chapter|isbn)\b|\b(?:ed|eds|editor|editors)\.?\s*(?:[,;)]|$)|\b(?:academic\s+press|university\s+press|springer|elsevier|wiley|routledge|sage|palgrave|crc\s+press)\b/i;
 
 interface JournalMetadata {
@@ -72,6 +77,8 @@ export class CitationParser {
   private trimTitle(title?: string): string | undefined {
     if (!title) return title;
     const trimmed = title
+      .replace(/^et\s+al\.?,?\s+/i, "")
+      .replace(/\.\s+arxiv\b.*$/i, "")
       .replace(/(?:[,.]\s*\(?|\s*\()(?:19|20)\d{2}[a-z]?\)?$/i, "")
       .replace(/,\s*vol\.?\s*\d+$/i, "")
       .trim();
@@ -111,6 +118,8 @@ export class CitationParser {
     const citation = raw.replace(CITATION_MARKER, "");
     const yearParenTitle = this.extractYearParenTitle(citation);
     if (yearParenTitle) return yearParenTitle;
+    const yearDotTitle = this.extractYearDotTitle(citation);
+    if (yearDotTitle) return yearDotTitle;
     const mathematicalTitle = this.extractCommaDelimitedTitle(citation);
     if (mathematicalTitle) return mathematicalTitle;
     const commaTitle = citation.match(COMMA_TITLE);
@@ -219,12 +228,28 @@ export class CitationParser {
   }
 
   /**
+   * ACM / Chicago author-date "Authors. 2020. Title. In Proceedings …": the title is the sentence after the year,
+   * also when it starts in lower case ("wav2vec 2.0: A Framework …").
+   */
+  private extractYearDotTitle(citation: string): string | undefined {
+    const match = citation.match(/^(.{2,600}?)\.\s+(?:19|20)\d{2}[a-z]?\.\s+(\S.*)$/su);
+    // "… Title. In ECCV. 2014. 1, 2": the year closes the reference, there is no title after it
+    if (!match || /\b(?:19|20)\d{2}\b|\.\s+In\b/.test(match[1]!) || !this.looksLikeAuthors(match[1]!)) return undefined;
+    if (!/^[\p{L}"“'‘]/u.test(match[2]!)) return undefined;
+    const rest = match[2]!.replace(/\b(St|Mt|vs|v|vol|no|e\.g|i\.e|[A-Z])\.(?=\s)/g, "$1\u0000");
+    const title = this.clean(rest.split(/[.?!]\s+(?=[\p{Lu}\d“"(]|In\b|arXiv\b|https?:|doi\b)/u)[0]!.replace(/\u0000/g, "."));
+    const words = title.split(/\s+/).length;
+    return words >= 1 && words <= 40 && title.length >= 4 && !VENUE_SEGMENT.test(title) ? title : undefined;
+  }
+
+  /**
    * Springer LNCS "Zeiler, M.D., Fergus, R.: Visualizing and understanding convolutional networks. In: European
    * conference on computer vision (2014)": the title follows the colon after the last author's initial (or "et al.").
    */
   private extractColonTitle(citation: string): string | undefined {
     const match = citation.match(/^(.{2,400}?(?:\b[A-ZÀ-ÖØ-Þ]\.|\bet\s+al\.?))\s*:\s+(\S.*)$/su);
-    if (!match || !this.looksLikeAuthors(match[1]!)) return undefined;
+    // "Preissner, J.: 1978, Title, …" is author-date, not LNCS
+    if (!match || !this.looksLikeAuthors(match[1]!) || /^\(?(?:19|20)\d{2}/.test(match[2]!)) return undefined;
     const rest = match[2]!.replace(/\b(St|Mt|vs|v|vol|no|e\.g|i\.e|[A-Z])\.(?=\s)/g, "$1\u0000");
     const title = this.clean(rest.split(/[.?!]\s+(?=[\p{Lu}\d“"]|In\b|https?:|doi\b)/u)[0]!.replace(/\u0000/g, "."));
     const words = title.split(/\s+/).length;
@@ -242,8 +267,8 @@ export class CitationParser {
       let title = segments[0] || "";
       if (/:\s*[IVXLCDM]+$/i.test(title) && segments[1]) title += `. ${segments[1]}`;
       const candidate = this.clean(title);
-      // the venue follows the title: past "In: …" no sentence is the title any more
-      if (/^in\s*:/i.test(candidate)) return undefined;
+      // the venue follows the title: past "In: …" / "In Proceedings …" no sentence is the title any more
+      if (VENUE_SEGMENT.test(candidate)) return undefined;
       const words = candidate.split(/\s+/).filter(Boolean).length;
       if (words < 2 || words > 40 || (words === 2 && normalizeTitle(candidate).length < 12) || this.looksLikeAuthors(candidate)) continue;
       if (/^(?:[A-ZÀ-ÖØ-Þ]\.\s*|\(?\s*(?:19|20)\d{2})/u.test(candidate)) continue;
@@ -284,7 +309,8 @@ export class CitationParser {
   private looksLikeAuthors(value: string): boolean {
     return /\bet\s+al\b/i.test(value)
       || /(?:^|,\s*)[A-ZÀ-ÖØ-Þ][\p{L}'’-]+,?\s+[A-Z](?:\.|\b)/u.test(value)
-      || /^(?:[A-Z]\.\s*){1,3}[\p{L}'’-]+(?:\s+(?:and|&)\s+(?:[A-Z]\.\s*){1,3}[\p{L}'’-]+)?$/u.test(value)
+      // "A. Mnih and G. Hinton", "A. Mnih, G. Hinton", "J.-B. Huang, M.-H. Yang"
+      || /^(?:[A-Z](?:\.?\s?-\s?[A-Z])?\.\s*){1,3}[\p{L}'’-]+(?:(?:,\s*(?:and\s+)?|\s+(?:and|&)\s+)(?:[A-Z](?:\.?\s?-\s?[A-Z])?\.\s*){1,3}[\p{L}'’-]+)*$/u.test(value)
       || FULL_NAME_LIST.test(value)
       || (value.match(/,/g)?.length || 0) >= 2;
   }

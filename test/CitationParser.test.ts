@@ -191,6 +191,25 @@ describe("CitationParser", () => {
     expect(coco.title).toBe("Microsoft COCO: Common objects in context");
   });
 
+  it("does not take an author for the title when the author list ends with a period", () => {
+    const lecun = parser.parse(block("[22] Y. LeCun, B. Boser, J. S. Denker, D. Henderson, R. E. Howard, W. Hubbard, and L. D. Jackel. Backpropagation applied to handwritten zip code recognition. Neural computation, 1989."));
+    expect(lecun.title).toBe("Backpropagation applied to handwritten zip code recognition");
+    expect(lecun.firstAuthor).toBe("lecun");
+  });
+
+  it.each([
+    ["hyphenated initials", "C. Qin, H. You, L. Wang, C.-C. J. Kuo, Y. Fu, Pointdan: A multi-scale 3D domain adaption network for point cloud representation, Adv. Neural Inf. Process. Syst. 32 (2019).", "Pointdan: A multi-scale 3D domain adaption network for point cloud representation"],
+    ["'et al.' before the title", "A. Radford, J. W. Kim, C. Hallacy, A. Ramesh, G. Goh, S. Agarwal, G. Sastry, A. Askell, P. Mishkin, J. Clark, et al. Learning transferable visual models from natural language supervision. In ICML, 2021.", "Learning transferable visual models from natural language supervision"],
+    ["two initials authors with a comma", "A. Mnih, G. Hinton. Three new graphical models for statistical language modelling. ICML, 2007.", "Three new graphical models for statistical language modelling"],
+    ["author-date title in lower case", "Alexei Baevski, Yuhao Zhou, Abdelrahman Mohamed, and Michael Auli. 2020. wav2vec 2.0: A Framework for Self-Supervised Learning of Speech Representations. In Advances in Neural Information Processing Systems.", "wav2vec 2.0: A Framework for Self-Supervised Learning of Speech Representations"],
+    ["a title starting with 'PP'", "Xiang Long, Kaipeng Deng, Guanzhong Wang, Yang Zhang, Errui Ding, et al. PP-YOLO: An effective and efficient implementation of object detector. arXiv preprint arXiv:2007.12099, 2020. 2, 7", "PP-YOLO: An effective and efficient implementation of object detector"],
+    ["a year after the title comma", "Y. Liu, Q. Hu, Y. Lei, K. Xu, J. Li, Y. Guo, Box2Seg: Learning Semantics of 3D Point Clouds with Box-Level Supervision, 2022. ArXiv:2201.02963 [cs].", "Box2Seg: Learning Semantics of 3D Point Clouds with Box-Level Supervision"],
+    ["page numbers after the closing year", "K. He, X. Zhang, S. Ren, and J. Sun. Spatial pyramid pooling in deep convolutional networks for visual recognition. In ECCV. 2014. 1, 2", "Spatial pyramid pooling in deep convolutional networks for visual recognition"],
+    ["author-date after a colon", "Preissner, J.: 1978, The influence of the atmosphere on passive radiometric measurements, Proceedings of the Symposium on Millimeter Wave Propagation, Vol. 245, pp. 1-13.", "The influence of the atmosphere on passive radiometric measurements"]
+  ])("finds the title with %s", (_, raw, title) => {
+    expect(parser.parse(block(raw)).title).toBe(title);
+  });
+
   it("never takes the 'In:' venue for the title", () => {
     expect(parser.parse(block("Bishop, Christopher M. 1999. Bayesian PCA. In: Advances in Neural Information Processing Systems.")).title).toBe("Bayesian PCA");
     expect(parser.parse(block("Kingma, Diederik P., and Welling, Max. 2014. Auto-Encoding Variational Bayes. In: Proceedings of the International Conference on Learning Representations.")).title).toBe("Auto-Encoding Variational Bayes");

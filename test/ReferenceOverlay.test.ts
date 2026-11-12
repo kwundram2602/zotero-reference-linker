@@ -45,6 +45,53 @@ describe("findIndexedReferenceMarkers", () => {
   });
 });
 
+describe("indexed reference placement", () => {
+  // one span per segment; returns the overlay page and the classes each span got
+  function page(pageIndex: number, segments: string[], searchableFrom: string) {
+    const element = {} as HTMLElement;
+    const classes = segments.map(() => new Set<string>());
+    const spans = segments.map((text, index) => ({
+      textContent: text,
+      classList: { add: (...names: string[]) => names.forEach(name => classes[index]!.add(name)) },
+      closest: () => element
+    })) as unknown as HTMLElement[];
+    const offsets: Array<{ start: number; end: number }> = [];
+    let text = "";
+    for (const segment of segments) {
+      if (text) text += " ";
+      offsets.push({ start: text.length, end: text.length + segment.length });
+      text += segment;
+    }
+    const indexed = {
+      page: element, pageIndex, spans, text, offsets,
+      searchableStart: text.indexOf(searchableFrom), searchableEnd: text.length, compact: { text: "", offsets: [] }
+    };
+    return { indexed, marked: () => segments.filter((_, index) => classes[index]!.size > 0) };
+  }
+
+  it("puts reference 1 on its entry, not on 'Volume 1.' inside reference 31 or a '1.' before the heading", () => {
+    const first = page(0, ["1.", "Introduction", "References", "1.", "He, K.: Deep residual learning.", "2.", "Other, A.: Paper."], "References");
+    const later = page(1, ["31.", "Lin, T.Y.: Feature pyramid networks. In: CVPR. Volume", "1.", "(2017) 4", "32.", "Next, B.: Paper."], "31.");
+    const style = { id: "", textContent: "" };
+    const doc = {
+      defaultView: { Element: class {} },
+      addEventListener() {},
+      getElementById: () => null,
+      createElement: () => style,
+      head: { append() {} }
+    } as unknown as Document;
+    const overlay = new ReferenceOverlay(doc, () => {});
+    Object.assign(overlay, { pages: [first.indexed, later.indexed] });
+    // matched and unmatched references are placed by the same code; unmatched needs no badge geometry here
+    expect(overlay.renderIndexedUnmatched(1)).toBe(true);
+    expect(first.marked()).toEqual(["1.", "He, K.: Deep residual learning."]);
+    expect(later.marked()).toEqual([]);
+    // reference 31 is not cut at "Volume 1."
+    expect(overlay.renderIndexedUnmatched(31)).toBe(true);
+    expect(later.marked()).toEqual(["31.", "Lin, T.Y.: Feature pyramid networks. In: CVPR. Volume", "1.", "(2017) 4"]);
+  });
+});
+
 describe("unmatchedReferenceActions", () => {
   it("offers DOI, Scholar search, and title copy when metadata is available", () => {
     expect(unmatchedReferenceActions({

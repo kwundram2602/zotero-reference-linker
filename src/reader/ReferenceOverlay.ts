@@ -183,13 +183,7 @@ export class ReferenceOverlay {
   }
 
   private renderIndexedReference(index: number, match: MatchResult | undefined, referenceKey: string, citation?: ParsedCitation): boolean {
-    for (const { text, offsets, spans, pageIndex, searchableStart, searchableEnd } of this.pages) {
-      const markers = findIndexedReferenceMarkers(text);
-      const markerIndex = markers.findIndex(marker => marker.index === index);
-      if (markerIndex < 0) continue;
-      const start = markers[markerIndex]!.start;
-      if (start < searchableStart || start >= searchableEnd) continue;
-      const end = Math.min(markers[markerIndex + 1]?.start ?? searchableEnd, searchableEnd);
+    for (const { page: { offsets, spans, pageIndex }, start, end } of this.indexedMarkers(index)) {
       const first = offsets.findIndex(offset => offset.end > start);
       let last = offsets.findIndex(offset => offset.start >= end);
       if (first < 0) continue;
@@ -199,6 +193,25 @@ export class ReferenceOverlay {
       return this.render({ raw: "", fragments, index }, match, referenceKey, citation);
     }
     return false;
+  }
+
+  /**
+   * Where reference `index` may start, best first. Only markers inside the reference section count, on every page: a
+   * "1." before the heading must not hide the real one after it. Text such as "Volume 1." inside reference 31 looks
+   * like the marker of reference 1 too, so a marker between its neighbours in the list (n-1 before or n+1 after) comes
+   * first. A reference ends at the next marker with a higher number, so "Volume 1." does not cut reference 31 short.
+   */
+  private indexedMarkers(index: number): Array<{ page: IndexedPage; start: number; end: number }> {
+    const markers = this.pages.flatMap(page => findIndexedReferenceMarkers(page.text)
+      .filter(marker => marker.start >= page.searchableStart && marker.start < page.searchableEnd)
+      .map(marker => ({ page, ...marker })));
+    const found = markers.flatMap((marker, position) => {
+      if (marker.index !== index) return [];
+      const next = markers.slice(position + 1).find(other => other.page === marker.page && other.index > index);
+      const inSequence = markers[position - 1]?.index === index - 1 || markers[position + 1]?.index === index + 1;
+      return [{ page: marker.page, start: marker.start, end: next?.start ?? marker.page.searchableEnd, inSequence }];
+    });
+    return [...found.filter(marker => marker.inSequence), ...found.filter(marker => !marker.inSequence)];
   }
 
   renderTitle(title: string, match: MatchResult, referenceKey = `title:${title}`): boolean {

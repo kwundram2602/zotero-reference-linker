@@ -25,6 +25,18 @@ export function unmatchedReferenceActions(citation: ParsedCitation): UnmatchedRe
   return actions;
 }
 
+/**
+ * Texts to find an unnumbered reference by in the text layer, best first: its title; else (or when the title is not
+ * found) the reference up to its link, without the identifiers the extractor appended from hyperlinks; and its
+ * authors and year alone, for a reference broken across columns or pages. Elsevier's short style has no title.
+ */
+export function referenceSearchTexts(raw: string, citation: Pick<ParsedCitation, "title">): string[] {
+  const visible = raw.replace(/\s+(?:doi:10\.\S+|arXiv:\S+)(?=\s|$)/g, "").replace(/\s+/g, " ").trim();
+  const beforeLink = visible.split(/\s(?=https?:|doi:|URL\b)/i)[0]!.trim();
+  const authorsAndYear = beforeLink.match(/^.{2,}?\b(?:19|20)\d{2}[a-z]?\b/)?.[0];
+  return [...new Set([citation.title, beforeLink, authorsAndYear].filter((text): text is string => Boolean(text)))];
+}
+
 interface IndexedPage {
   page: HTMLElement;
   pageIndex: number;
@@ -343,11 +355,11 @@ export class ReferenceOverlay {
     const style = this.doc.createElement("style");
     style.id = ReferenceOverlay.styleID;
     style.textContent = `
-      .reference-linker-hit { background: rgba(255, 210, 40, .34) !important; border-radius: 2px; cursor: pointer; }
-      .reference-linker-unmatched { background: rgba(110, 118, 126, .45) !important; border-radius: 2px; }
+      .reference-linker-hit { background: rgba(46, 204, 113, .30) !important; border-radius: 2px; cursor: pointer; }
+      .reference-linker-unmatched { background: rgba(66, 153, 225, .28) !important; border-radius: 2px; }
       .reference-linker-actionable { cursor: pointer; }
-      .reference-linker-badge { position: absolute; z-index: 50; border: 1px solid rgba(90,70,0,.35); border-radius: 4px; padding: 1px 5px; background: #fff3a6; color: #342b00; font: 600 10px/16px system-ui, sans-serif; cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
-      .reference-linker-badge:hover { background: #ffe35c; }
+      .reference-linker-badge { position: absolute; z-index: 50; border: 1px solid rgba(20,100,45,.35); border-radius: 4px; padding: 1px 5px; background: #c9f1d4; color: #10391c; font: 600 10px/16px system-ui, sans-serif; cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
+      .reference-linker-badge:hover { background: #a7e6b8; }
       .reference-linker-menu { position: fixed; z-index: 100; display: flex; gap: 4px; padding: 5px; border: 1px solid rgba(0,0,0,.18); border-radius: 7px; background: rgba(255,255,255,.97); box-shadow: 0 3px 12px rgba(0,0,0,.22); }
       .reference-linker-menu button { border: 0; border-radius: 4px; padding: 4px 7px; background: transparent; color: #222; font: 600 11px/16px system-ui, sans-serif; white-space: nowrap; cursor: pointer; }
       .reference-linker-menu button:hover { background: rgba(0,0,0,.08); }

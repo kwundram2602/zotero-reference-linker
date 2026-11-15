@@ -3,6 +3,25 @@ export function normalizeDOI(value: string): string | undefined {
   return match?.[0].replace(/[.,;:)\]}]+$/g, "").toLowerCase();
 }
 
+// A DOI broken at a line end ("…/10.1016/j.jag.⏎2020.102174", "…/10.3390/⏎rs14081792"): after a slash any token
+// continues it; after a period only one starting in lower case or a digit, and never a year ("10.1000/xyz. 2020."),
+// a URL, an identifier appended from a link or a page number from the footer ("…/rs10010085. 112 M. Wocher et al.").
+// The continuation has a digit: "…/10.1109/ december 2017" is a page header, not the rest of the DOI.
+const BROKEN_DOI = /(10\.\d{4,9}\/(?:[-._;()/:a-zA-Z0-9]*[./])?)\s+(?!(?:doi|DOI|arXiv|arxiv|https?|HTTPS?):|URL\b|(?:19|20)\d{2}[a-z]?[.,]?(?:\s|$)|\d{1,4}(?:\s|$))(?:(?<=\/\s*)(?=[A-Za-z0-9])|(?=[a-z0-9]))(?=[^\s\d]*\d)/g;
+const DOI = /10\.\d{4,9}\/[-._;()/:a-z0-9]+/gi;
+
+/**
+ * The DOI of a reference's text. A DOI cut at a line end is joined again, and when a later DOI extends the first one
+ * (the full DOI that the extractor appends from the reference's hyperlink) the longer one wins.
+ */
+export function referenceDOI(value: string): string | undefined {
+  const joined = value.replace(BROKEN_DOI, "$1");
+  const candidates = [...joined.matchAll(DOI)].map(match => match[0].replace(/[.,;:)\]}]+$/g, "").toLowerCase());
+  const first = candidates[0];
+  if (!first) return undefined;
+  return candidates.find(candidate => candidate.length > first.length && candidate.startsWith(first)) ?? first;
+}
+
 export function normalizeArxiv(value: string): string | undefined {
   const match = value.match(/(?:arxiv\s*:\s*)?((?:[a-z-]+\/\d{7})|(?:\d{4}\.\d{4,5}))(?:v\d+)?/i);
   return match?.[1]?.toLowerCase();

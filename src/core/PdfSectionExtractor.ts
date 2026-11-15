@@ -33,7 +33,10 @@ const INDEX_HEADING = /^\s*(?:(?:subject|author|name)\s+)?index\s*$/i;
 // fewer references after a scanned heading: probably a table-of-contents entry, try the next heading
 const MIN_SCANNED_REFERENCES = 3;
 const LABELED_START = /(?:^|\n)\s*(?:\[\s*((?=[^\]\n]{0,24}\d)[A-Za-z0-9][A-Za-z0-9+.:/_\-\s]{0,23})\s*\]|((?!(?:18|19|20|21)\d{2}\b)\d{1,4}) ?[.)]|((?!(?:18|19|20|21)\d{2}\b)\d{1,4})(?=\s+(?:[A-ZÀ-ÖØ-Þ](?:\.|\s)|Technical\b)))(?:\s+|(?=\p{Lu}))/gu;
-const PARTICLE = `(?:[Dd]e|[Dd]el|[Dd]en|[Dd]er|[Dd]i|[Dd]u|[Ll]a|[Ll]e|[Vv]an|[Vv]on)\\s+`;
+// a line starting with a reference's label: "[12]", "12." or "12)"; a year is no label ("2022. ISPRS J. …" continues
+// an author-year reference)
+const REFERENCE_LABEL = /^\s*(?:\[\s*[A-Za-z0-9][^\]]{0,24}\]|(?!(?:18|19|20|21)\d{2}\b)\d{1,4} ?[.)])(?:\s+|(?=\p{Lu}))/u;
+const PARTICLE =`(?:[Dd]e|[Dd]el|[Dd]en|[Dd]er|[Dd]i|[Dd]u|[Ll]a|[Ll]e|[Vv]an|[Vv]on)\\s+`;
 const SURNAME = `(?:${PARTICLE}){0,3}[A-ZÀ-ÖØ-Þ][\\p{L}'’\u2010-]+(?:\\s+[A-ZÀ-ÖØ-Þ][\\p{L}'’\u2010-]+){0,2}`;
 // Springer/Vancouver style without dots: "Aiken C (2024)", "Bishop JW, …", "Royer J-Y, …", "Chadwick Jr WW, …"
 const COMPACT_INITIALS = `(?:\\s+Jr\\.?)?\\s+[A-Z]{1,3}(?:-[A-Z]{1,2})?(?=\\s*(?:[,;]|et\\s+al\\b|\\((?:19|20)\\d{2}))`;
@@ -44,6 +47,9 @@ const AUTHOR_START = new RegExp(
   "gu"
 );
 const ORGANIZATION_START = /(?:^|\n)(?=\s*[A-Z][^\n,]{1,80}\b(?:Collaboration|Partnership)\b[^\n]*\b(?:19|20)\d{2}[a-z]?\b)/gu;
+// "FAO, 2022. Land use …", "National Academies of Sciences, E., 2018. …": only where hanging indents mark the
+// continuation lines, so an unindented line is a new reference (see splitReferences)
+const ORGANIZATION_YEAR_START = /(?:^|\n)(?=[A-ZÀ-ÖØ-Þ][^\n,]{1,60},\s*(?:[A-Z]\.,\s*)?(?:19|20)\d{2}[a-z]?\.\s)/gu;
 const DITTO_START = /(?:^|\n)(?=\s*[—–-]\.\s*(?:19|20)\d{2}[a-z]?\b)/gu;
 // Organisations and other authors without initials: "FIRMS (2026) Fire-…", "Global Volcanism Program (2026) [Database] …";
 // the year may open the next, indented line.
@@ -349,7 +355,7 @@ export class PdfSectionExtractor {
       };
       const headingIndex = lines.findIndex(value => this.isReferenceHeading(value.text));
       const firstLabeledAfterHeading = headingIndex >= 0 ? lines.slice(headingIndex + 1).find(value =>
-        /^\s*(?:\[\s*[A-Za-z0-9][^\]]{0,24}\]|\d{1,4} ?[.)])(?:\s+|(?=\p{Lu}))/u.test(value.text)
+        REFERENCE_LABEL.test(value.text)
       ) : undefined;
       // unnumbered lists have no labeled line: the heading's own column is where the list starts
       const referenceColumn = firstLabeledAfterHeading ? nearestColumn(firstLabeledAfterHeading)
@@ -367,7 +373,7 @@ export class PdfSectionExtractor {
       let line = value.text;
       if (value.x != null) {
         const indented = columnBases.some(position => value.x! - position >= 5 && value.x! - position <= 36);
-        const labeled = /^\s*(?:\[\s*[A-Za-z0-9][^\]]{0,24}\]|\d{1,4} ?[.)])(?:\s+|(?=\p{Lu}))/u.test(value.text);
+        const labeled = REFERENCE_LABEL.test(value.text);
         if (indented && !labeled) line = `${CONTINUATION_LINE}${line}`;
       }
       return this.splitInlineReferenceHeading(line);
@@ -391,6 +397,8 @@ export class PdfSectionExtractor {
       const url = this.decode(annotation.url || "");
       const rect = annotation.rect;
       if (!url || !rect || rect.length < 4) continue;
+      // a link wrapped over two lines also has a zero-width rect at the column edge, beside the other column's line
+      if (Math.abs(rect[2]! - rect[0]!) < 2) continue;
       const doi = normalizeDOI(url);
       const arxiv = !doi && /arxiv\.org\//i.test(url) ? normalizeArxiv(url) : undefined;
       if (!doi && !arxiv) continue;
@@ -474,13 +482,15 @@ export class PdfSectionExtractor {
       ...[...text.matchAll(AUTHOR_START)].map(match => match.index!),
       ...[...text.matchAll(ORGANIZATION_START)].map(match => match.index!),
       ...[...text.matchAll(DITTO_START)].map(match => match.index!),
+      ...(text.includes(CONTINUATION_LINE) ? [...text.matchAll(ORGANIZATION_YEAR_START)].map(match => match.index!) : []),
       ...[...text.matchAll(YEAR_PAREN_START)].map(match => match.index!)
     ])].sort((a, b) => a - b);
     let previousAuthor: string | undefined;
     return indices.map((start, i) => {
       const raw = this.visibleLine(text.slice(start, indices[i + 1] ?? text.length)).trim();
       const author = this.referenceFirstAuthor(raw);
-      const organization = raw.match(/^([^,]{1,80}\b(?:Collaboration|Partnership)\b)/i)?.[1];
+      const organization = raw.match(/^([^,]{1,80}\b(?:Collaboration|Partnership)\b)/i)?.[1]
+        || raw.match(/^([^,\n]{1,60}),\s*(?:[A-Z]\.,\s*)?(?:19|20)\d{2}[a-z]?\.\s/)?.[1];
       const firstAuthorHint = /^[—–-]\./.test(raw) ? previousAuthor : surname(author || organization);
       if (firstAuthorHint) previousAuthor = firstAuthorHint;
       return { raw, fragments: [], firstAuthorHint };

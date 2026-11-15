@@ -2,7 +2,7 @@ import { CitationParser } from "../core/CitationParser";
 import { LibraryMatcher } from "../core/LibraryMatcher";
 import { PdfSectionExtractor, type PdfDocument } from "../core/PdfSectionExtractor";
 import type { MatchOutcome, MatchResult, ParsedCitation, ReferenceSection, ScanResult } from "../core/types";
-import { ReferenceOverlay, type UnmatchedReferenceAction } from "./ReferenceOverlay";
+import { ReferenceOverlay, referenceSearchTexts, type UnmatchedReferenceAction } from "./ReferenceOverlay";
 
 /** Extra menu actions for an unmatched reference, given by the host plugin (setUnmatchedActions). */
 export type UnmatchedActionProvider = (
@@ -209,7 +209,8 @@ export class ReaderIntegration {
           if (reference.index != null) {
             state.overlay.renderIndexedUnmatched(reference.index, citation, referenceKey);
           } else {
-            state.overlay.renderTitleUnmatched(citation.title || reference.raw, citation, referenceKey);
+            const overlay = state.overlay;
+            referenceSearchTexts(reference.raw, citation).some(text => overlay.renderTitleUnmatched(text, citation, referenceKey));
           }
           continue;
         }
@@ -217,9 +218,10 @@ export class ReaderIntegration {
         if (found.record.item.id === currentItemID) continue;
         const match = await this.displayedMatch(found, matcher, attachment.libraryID);
         result.matched.push({ index: reference.index, citation, match });
+        const overlay = state.overlay;
         reference.index != null
-          ? state.overlay.renderIndexed(reference.index, match, referenceKey)
-          : state.overlay.renderTitle(citation.title || reference.raw, match, referenceKey);
+          ? overlay.renderIndexed(reference.index, match, referenceKey)
+          : referenceSearchTexts(reference.raw, citation).some(text => overlay.renderTitle(text, match, referenceKey));
       }
       const linked = state.overlay.linkCount();
       this.updateSummary(state, {

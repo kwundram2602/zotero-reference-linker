@@ -1,4 +1,4 @@
-import { normalizeArxiv, normalizeContainerTitle, normalizeDOI, normalizeLocator, normalizeTitle, normalizeVolume, surname } from "./normalize";
+import { normalizeArxiv, normalizeContainerTitle, normalizeLocator, normalizeTitle, normalizeVolume, referenceDOI, surname } from "./normalize";
 import type { ParsedCitation, ReferenceBlock } from "./types";
 
 const YEAR = /\b(19\d{2}|20\d{2})[a-z]?\b/i;
@@ -23,6 +23,14 @@ const CONFERENCE_ACRONYM_WITH_YEAR = /\b[A-Z][A-Z0-9&/-]{2,}\s+(?:19|20)\d{2}[a-
 const VENUE_SEGMENT = /^(?:(?:doi|arxiv)\b|vol\.?\s*\d|pp?\.?\s*\d|https?:|in\s*:|in\s+(?:the\s+)?(?:proceedings|proc\.|conference|journal|advances\s+in|international|annual|european|ieee|acm|workshop))/i;
 const BOOK_SECTION_CONTEXT = /\b(?:chapter|isbn)\b|\b(?:ed|eds|editor|editors)\.?\s*(?:[,;)]|$)|\b(?:academic\s+press|university\s+press|springer|elsevier|wiley|routledge|sage|palgrave|crc\s+press)\b/i;
 
+// "2022. Remote Sens. 14 (8), 1792." — groups: journal, its closing period, a page range alone, volume, issue, pages
+const SHORT_JOURNAL = /^(?:19|20)\d{2}[a-z]?\.\s+([^,\d:?;]{2,100}?)(\.)?\s+(?:(\d+[-–—]\d+)(?=\s*[.,]|\s*$)|([A-Za-z]?\d+[A-Za-z]?)(?:\s*\((\d+(?:[-–—]\d+)?)\))?(?:\s*,\s*(?:pp?\.?\s*)?([A-Za-z]?\d+(?:[-–—][A-Za-z]?\d+)?)\b|(?=\s*(?:[,.]|$)))|(?=(?:https?:|doi\b|URL\b)))/iu;
+
+// Elsevier's author list before the year: "Candiani, G., Rivera Caicedo, J.P., Zhu, X.-G., Boschetti, M"; PDFs
+// sometimes lower an accented initial ("Moreno-Martínez, á.")
+const SURNAME_INITIALS = `[^,.;:()"“”\\d]{1,40},\\s*\\p{L}\\.?(?:\\s?-?\\s?\\p{Lu}\\.?){0,4}`;
+const SURNAME_INITIALS_LIST = new RegExp(`^${SURNAME_INITIALS}(?:\\s*,\\s*(?:(?:and|&)\\s+)?${SURNAME_INITIALS})*(?:,?\\s*et\\s+al\\.?)?$`, "u");
+
 interface JournalMetadata {
   containerTitle: string;
   volume?: string;
@@ -41,7 +49,7 @@ export class CitationParser {
     const containerTitle = journal?.containerTitle || this.extractContainerTitle(raw, title);
     return {
       raw,
-      doi: normalizeDOI(raw),
+      doi: referenceDOI(raw),
       arxiv: normalizeArxiv(raw),
       title,
       normalizedTitle: title ? normalizeTitle(title) : undefined,
@@ -68,6 +76,8 @@ export class CitationParser {
       if (/^\s*[-–—]\s*\d/.test(after) || /\d\s*[-–—]\s*$/.test(before)) continue;
       if (/\b(?:pp?|pages?)\.?\s*$/i.test(before)) continue;
       if (/^\.\d{4,5}/.test(after) || /(?:arxiv\s*:?|abs\/)\s*$/i.test(before)) continue;
+      // "10.1016/j.isprsjprs.2022.03.014": not the year of this reference
+      if (/\b10\.\d{4,9}\/\S*$/.test(before)) continue;
       return match;
     }
     return null;
@@ -205,6 +215,9 @@ export class CitationParser {
       };
     }
 
+    const short = this.shortJournalMetadata(citation.slice(adjustedYearIndex), authorArea);
+    if (short) return short;
+
     const beforeYear = citation.slice(0, adjustedYearIndex);
     const yearLast = beforeYear.match(/,\s*([^,]{2,80}?)\s*,?\s+([A-Za-z]?\d+[A-Za-z]?)\s*,\s*([A-Za-z]?\d+(?:[-–—][A-Za-z]?\d+)?)\s*\($/i);
     if (!yearLast) return undefined;
@@ -218,6 +231,46 @@ export class CitationParser {
       articleNumber: locator && /^[a-z]/i.test(locator) ? locator.toUpperCase() : undefined,
       titleless: true
     };
+  }
+
+  /**
+   * Elsevier's short style has no title: "Authors, 2022. Remote Sens. 14 (8), 1792. http://…", also with only a page
+   * range ("IEEE Geosci. Remote Sens. Lett. 1–5."), only a volume ("Front. Plant Sci. 9, http://…") or neither.
+   */
+  private shortJournalMetadata(afterYear: string, authorArea: string): JournalMetadata | undefined {
+    const match = afterYear.match(SHORT_JOURNAL);
+    // identifiers the extractor appended from hyperlinks may sit in the author list
+    const authors = authorArea.replace(/\s+(?:doi:10\.\S+|arXiv:\S+)(?=\s|$)/g, "");
+    if (!match || !SURNAME_INITIALS_LIST.test(authors)) return undefined;
+    const [, journal, period, pageRange, volume, issue, pages] = match;
+    if (!this.looksLikeJournalAbbreviation(journal!, Boolean(period))) return undefined;
+    // without volume and pages only an abbreviation ("Front. Clim. http://…"), not "Storage Architecture. http://…"
+    if (!volume && !pageRange && journal!.split(/\.\s+/).length < 2) return undefined;
+    const locator = normalizeLocator(pages || pageRange);
+    return {
+      containerTitle: this.clean(journal!),
+      volume: normalizeVolume(volume),
+      issue,
+      pages: pages || pageRange,
+      articleNumber: locator && /^[a-z]/i.test(locator) ? locator.toUpperCase() : undefined,
+      titleless: true
+    };
+  }
+
+  /**
+   * "ISPRS J. Photogramm. Remote Sens.", "Philos. Trans. Royal Soc. A", "Appl. Energy", "Energies", but not a title
+   * such as "Deep learning. Nature" or "Deep Learning. Nature": capitalised words, and of several sentences each a
+   * short abbreviation; the last one is abbreviated too, or all before it are short words ("Appl.").
+   */
+  private looksLikeJournalAbbreviation(journal: string, endsWithPeriod: boolean): boolean {
+    const words = journal.trim().split(/\s+/);
+    if (words.length > 8) return false;
+    if (!words.every(word => /^[\p{Lu}(&|]/u.test(word) || /^(?:of|and|the|for|in|on|de|la|und)$/.test(word))) return false;
+    const sentences = journal.split(/\.\s+/);
+    if (sentences.length === 1) return true;
+    if (!sentences.every(sentence => sentence.split(/\s+/).length <= 3)) return false;
+    return endsWithPeriod || /\s\p{Lu}$/u.test(journal)
+      || sentences.slice(0, -1).every(sentence => sentence.split(/\s+/).every(word => word.length <= 6));
   }
 
   private looksLikeInitialsAuthorList(value: string): boolean {

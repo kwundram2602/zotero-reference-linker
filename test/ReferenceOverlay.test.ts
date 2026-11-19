@@ -116,3 +116,31 @@ describe("unmatchedReferenceActions", () => {
     expect(unmatchedReferenceActions({ raw: "  " })).toEqual([]);
   });
 });
+
+describe("title search in the compact page text", () => {
+  const doc = {
+    defaultView: { Element: class {} },
+    addEventListener() {},
+    getElementById: () => null,
+    createElement: () => ({ id: "", textContent: "" }),
+    head: { append() {} }
+  } as unknown as Document;
+  const find = (source: string, target: string, from = 0) =>
+    (new ReferenceOverlay(doc, () => {}) as unknown as {
+      findCompactText(source: string, target: string, from: number): { start: number; end: number } | undefined;
+    }).findCompactText(source, target, from);
+
+  it("finds the title exactly or across inserted page/footnote numbers", () => {
+    expect(find("xxdeepresiduallearningyy", "deepresiduallearning")).toEqual({ start: 2, end: 22 });
+    expect(find("xxdeepresid123uallearningyy", "deepresiduallearning")).toEqual({ start: 2, end: 25 });
+  });
+
+  it("does not skip digits where the title itself has one, nor letters", () => {
+    expect(find("resnet50x", "resnet51x")).toBeUndefined();
+    expect(find("deepresidxuallearning", "deepresiduallearning")).toBeUndefined();
+  });
+
+  it("starts at `from`", () => {
+    expect(find("deep1learning deep2learning", "deeplearning", 1)).toEqual({ start: 14, end: 27 });
+  });
+});

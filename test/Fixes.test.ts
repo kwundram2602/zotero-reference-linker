@@ -154,7 +154,7 @@ describe("ReaderIntegration across libraries and library changes", () => {
       getMatchers(libraryID: number): Promise<LibraryMatcher[]>;
       matchAcross(matchers: LibraryMatcher[], citation: unknown): { outcome: { match?: { record: { item: { id: number } } }; ambiguous: boolean } };
       displayedMatch(match: unknown, matcher: LibraryMatcher, ownLibraryID: number): Promise<{ record: { title: string } }>;
-      onItemsChanged(event: string, ids: number[]): void;
+      onItemsChanged(event: string, ids: number[], extraData?: unknown): void;
       matcherCache: Map<number, unknown>;
     };
     return { integration, indexed };
@@ -182,10 +182,17 @@ describe("ReaderIntegration across libraries and library changes", () => {
     integration.onItemsChanged("modify", [999]);
     expect(integration.matcherCache.size).toBe(2);
     integration.onItemsChanged("modify", [11]);
-    expect(integration.matcherCache.size).toBe(0);
+    expect([...integration.matcherCache.keys()]).toEqual([2]);
     await integration.getMatchers(1);
     integration.onItemsChanged("delete", [999]);
     expect(integration.matcherCache.size).toBe(0);
+  });
+
+  it("drops only the library a deletion names", async () => {
+    const { integration } = setup({ 1: [11] });
+    await integration.getMatchers(1);
+    integration.onItemsChanged("delete", [999], { 999: { libraryID: 2 } });
+    expect([...integration.matcherCache.keys()]).toEqual([1]);
   });
 });
 
@@ -206,5 +213,28 @@ describe("host actions for unmatched references", () => {
     overlay.setExtraActions(citation => citation.doi ? [{ kind: "run", label: "Add to Zotero", run() {} }] : []);
     const labels = overlay.actionsFor({ raw: "X. A paper. 2020.", doi: "10.1234/x" }).map(action => action.label);
     expect(labels).toEqual(["Open DOI", "Search", "Copy reference", "Add to Zotero"]);
+  });
+});
+
+describe("rescans while scrolling", () => {
+  // a text layer span on a pdf.js .page element (1-based data-page-number)
+  function span(pageNumber: number) {
+    const page = { dataset: { pageNumber: String(pageNumber) } };
+    return { nodeType: 1, closest: (selector: string) => selector === ".page" ? page : null, matches: () => false };
+  }
+  const integration = new ReaderIntegration({} as ZoteroAPI, "test") as unknown as {
+    relevantMutation(mutation: unknown, state: unknown): boolean;
+  };
+  const mutation = (pageNumber: number) => ({ target: span(pageNumber), addedNodes: [span(pageNumber)], removedNodes: [] });
+
+  it("counts every page until the reference section is known", () => {
+    expect(integration.relevantMutation(mutation(1), { scanning: false })).toBe(true);
+  });
+
+  it("then only the reference pages, and none in a PDF without a section", () => {
+    const state = { scanning: false, section: { startPage: 9, endPage: 11 } };
+    expect(integration.relevantMutation(mutation(3), state)).toBe(false);
+    expect(integration.relevantMutation(mutation(10), state)).toBe(true);
+    expect(integration.relevantMutation(mutation(10), { scanning: false, section: null })).toBe(false);
   });
 });

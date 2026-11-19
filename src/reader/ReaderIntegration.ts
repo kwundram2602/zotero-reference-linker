@@ -23,6 +23,8 @@ interface ReaderState {
   summary?: HTMLElement;
   summaryTimer?: number;
   sectionPromise?: Promise<ReferenceSection | undefined>;
+  /** The resolved reference section; null: the PDF has none. Narrows rescans to its pages. */
+  section?: ReferenceSection | null;
   unloadHandler?: () => void;
   result?: ScanResult;
 }
@@ -42,7 +44,7 @@ export class ReaderIntegration {
   start(): void {
     this.zotero.Reader.registerEventListener("renderToolbar", this.toolbarHandler, this.pluginID);
     this.notifierID = this.zotero.Notifier?.registerObserver(
-      { notify: (event, _type, ids) => this.onItemsChanged(event, ids) },
+      { notify: (event, _type, ids, extraData) => this.onItemsChanged(event, ids, extraData) },
       ["item"],
       "referenceLinker"
     );
@@ -72,16 +74,26 @@ export class ReaderIntegration {
 
   /**
    * The library index is built once per library; items added, edited, trashed or deleted (or an attachment
-   * relinked) afterwards would never be matched. Drop the indexes and rescan the open readers. Notes and
+   * relinked) afterwards would never be matched. Drop the indexes of the changed items' libraries (all of them for a
+   * deletion that does not name its library) and rescan the open readers; the scan rebuilds them. Notes and
    * annotations (e.g. highlighting while reading) do not change what can be matched and are ignored.
    */
-  private onItemsChanged(event: string, ids: Array<number | string>): void {
-    const relevant = event === "delete" || ids.some(id => {
+  private onItemsChanged(event: string, ids: Array<number | string>, extraData?: unknown): void {
+    const libraries = new Set<number>();
+    let all = false;
+    for (const id of ids) {
+      if (event === "delete") {
+        const libraryID = (extraData as Record<string, { libraryID?: unknown } | undefined> | undefined)?.[id]?.libraryID;
+        if (typeof libraryID === "number") libraries.add(libraryID);
+        else all = true;
+        continue;
+      }
       const item = typeof id === "number" ? this.zotero.Items.get(id) : false;
-      return item && (item.isRegularItem() || item.isAttachment());
-    });
-    if (!relevant) return;
-    this.matcherCache.clear();
+      if (item && (item.isRegularItem() || item.isAttachment())) libraries.add(item.libraryID);
+    }
+    if (!all && !libraries.size) return;
+    if (all) this.matcherCache.clear();
+    else for (const libraryID of libraries) this.matcherCache.delete(libraryID);
     for (const reader of this.readers) {
       const state = this.states.get(reader);
       if (state) state.fingerprint = undefined;
@@ -161,17 +173,29 @@ export class ReaderIntegration {
   private async scan(reader: ZoteroReader, reportEmpty: boolean, force = false): Promise<number | undefined> {
     const state = this.states.get(reader);
     const doc = this.getViewerDocument(reader);
-    if (!state || !doc || state.scanning) return undefined;
+    if (!state || !doc) return undefined;
+    if (state.scanning) {
+      // pages rendered during a scan would otherwise never be linked: their mutations only scheduled this call
+      if (!force) this.scheduleScan(reader);
+      return undefined;
+    }
     this.observeViewer(reader, doc);
-    const fingerprint = this.pageFingerprint(doc);
+    const fingerprint = this.pageFingerprint(doc, state.section || undefined);
     if (!force && state.fingerprint === fingerprint) return state.lastMatched;
     state.fingerprint = fingerprint;
     state.scanning = true;
     try {
       const section = await this.getReferenceSection(reader, state);
       if (!section) {
+        // only an extracted PDF has no section for sure; before the document loaded nothing was extracted
+        if (state.sectionPromise) state.section = null;
         if (reportEmpty) this.zotero.debug("Reference Linker: no rendered References section found. Scroll to the references pages and retry.");
         return undefined;
+      }
+      if (state.section !== section) {
+        // from now on only the reference pages count, so scrolling through the body does not rescan
+        state.section = section;
+        state.fingerprint = this.pageFingerprint(doc, section);
       }
       const attachment = this.getAttachment(reader);
       if (!attachment) return undefined;
@@ -296,13 +320,34 @@ export class ReaderIntegration {
     }, 30_000);
   }
 
-  private pageFingerprint(doc: Document): string {
-    return Array.from(doc.querySelectorAll<HTMLElement>(".page")).map(page => {
+  /** What is rendered on the pages (only those of `section`, if given): a scan is needed when it changes. */
+  private pageFingerprint(doc: Document, section?: Pick<ReferenceSection, "startPage" | "endPage">): string {
+    const pages = Array.from(doc.querySelectorAll<HTMLElement>(".page"));
+    return (section ? pages.filter(page => this.inSection(page, section)) : pages).map(page => {
       const spans = page.querySelectorAll<HTMLElement>(".textLayer span");
       const first = spans.item(0)?.textContent || "";
       const last = spans.item(spans.length - 1)?.textContent || "";
       return `${page.dataset.pageNumber || "?"}:${spans.length}:${first}:${last}`;
     }).join("|");
+  }
+
+  private inSection(page: HTMLElement, section: Pick<ReferenceSection, "startPage" | "endPage">): boolean {
+    const pageIndex = (Number(page.dataset.pageNumber) || 1) - 1;
+    return pageIndex >= section.startPage && pageIndex <= section.endPage;
+  }
+
+  /**
+   * Whether a viewer mutation can change the links: pdf.js renders and drops text layers of every page while
+   * scrolling, so once the reference section is known only its pages count (none if the PDF has no section).
+   * Mutations outside any page (e.g. the viewer rebuilt on zoom) and the overlay's own badges keep the old rule.
+   */
+  private relevantMutation(mutation: MutationRecord, state: ReaderState): boolean {
+    if (state.section === null) return false;
+    const target = mutation.target.nodeType === 1 ? mutation.target as Element : mutation.target.parentElement;
+    const page = target?.closest<HTMLElement>(".page");
+    if (page && state.section && !this.inSection(page, state.section)) return false;
+    return Array.from(mutation.addedNodes).some(node => !this.isOwnNode(node))
+      || Array.from(mutation.removedNodes).some(node => !this.isOwnNode(node));
   }
 
   private getPdfDocument(reader: ZoteroReader): PdfDocument | undefined {
@@ -374,11 +419,7 @@ export class ReaderIntegration {
     state.viewerObserver?.disconnect();
     const Observer = (win as Window & { MutationObserver: typeof MutationObserver }).MutationObserver;
     state.viewerObserver = new Observer(mutations => {
-      const changedReaderContent = mutations.some(mutation =>
-        Array.from(mutation.addedNodes).some(node => !this.isOwnNode(node))
-        || Array.from(mutation.removedNodes).some(node => !this.isOwnNode(node))
-      );
-      if (changedReaderContent) this.scheduleScan(reader);
+      if (mutations.some(mutation => this.relevantMutation(mutation, state))) this.scheduleScan(reader);
     });
     state.viewerObserver.observe(doc.documentElement, { childList: true, subtree: true });
     state.viewerDocument = doc;

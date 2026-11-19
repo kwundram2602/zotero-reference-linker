@@ -58,6 +58,7 @@ export function findIndexedReferenceMarkers(text: string): Array<{ index: number
 export class ReferenceOverlay {
   private static readonly styleID = "reference-linker-style";
   private pages: IndexedPage[] = [];
+  private markerCache?: { pages: IndexedPage[]; markers: Array<{ page: IndexedPage; index: number; start: number }> };
   private hits = new WeakMap<Element, MatchResult>();
   private unmatched = new WeakMap<Element, ParsedCitation>();
   private claimedElements = new WeakSet<Element>();
@@ -214,16 +215,34 @@ export class ReferenceOverlay {
    * first. A reference ends at the next marker with a higher number, so "Volume 1." does not cut reference 31 short.
    */
   private indexedMarkers(index: number): Array<{ page: IndexedPage; start: number; end: number }> {
-    const markers = this.pages.flatMap(page => findIndexedReferenceMarkers(page.text)
-      .filter(marker => marker.start >= page.searchableStart && marker.start < page.searchableEnd)
-      .map(marker => ({ page, ...marker })));
-    const found = markers.flatMap((marker, position) => {
-      if (marker.index !== index) return [];
-      const next = markers.slice(position + 1).find(other => other.page === marker.page && other.index > index);
+    const markers = this.sectionMarkers();
+    const found: Array<{ page: IndexedPage; start: number; end: number; inSequence: boolean }> = [];
+    markers.forEach((marker, position) => {
+      if (marker.index !== index) return;
+      let next: (typeof markers)[number] | undefined;
+      for (let other = position + 1; other < markers.length && markers[other]!.page === marker.page; other++) {
+        if (markers[other]!.index > index) {
+          next = markers[other];
+          break;
+        }
+      }
       const inSequence = markers[position - 1]?.index === index - 1 || markers[position + 1]?.index === index + 1;
-      return [{ page: marker.page, start: marker.start, end: next?.start ?? marker.page.searchableEnd, inSequence }];
+      found.push({ page: marker.page, start: marker.start, end: next?.start ?? marker.page.searchableEnd, inSequence });
     });
     return [...found.filter(marker => marker.inSequence), ...found.filter(marker => !marker.inSequence)];
+  }
+
+  /** The reference markers inside the section, in page order; found once per set of indexed pages, not per reference. */
+  private sectionMarkers(): Array<{ page: IndexedPage; index: number; start: number }> {
+    if (this.markerCache?.pages !== this.pages) {
+      this.markerCache = {
+        pages: this.pages,
+        markers: this.pages.flatMap(page => findIndexedReferenceMarkers(page.text)
+          .filter(marker => marker.start >= page.searchableStart && marker.start < page.searchableEnd)
+          .map(marker => ({ page, ...marker })))
+      };
+    }
+    return this.markerCache.markers;
   }
 
   renderTitle(title: string, match: MatchResult, referenceKey = `title:${title}`): boolean {
@@ -263,7 +282,13 @@ export class ReferenceOverlay {
   private findCompactText(source: string, target: string, from: number): { start: number; end: number } | undefined {
     const exact = source.indexOf(target, from);
     if (exact >= 0) return { start: exact, end: exact + target.length };
-    for (let start = from; start < source.length; start++) {
+    // a match starts with the target's first character (a number is only skipped after it), so only those starts
+    // are tried; numbers are skipped by char code, without a substring and a regex per position
+    const isDigit = (text: string, at: number) => {
+      const code = text.charCodeAt(at);
+      return code >= 48 && code <= 57;
+    };
+    for (let start = source.indexOf(target[0]!, from); start >= 0; start = source.indexOf(target[0]!, start + 1)) {
       let sourceIndex = start;
       let targetIndex = 0;
       while (sourceIndex < source.length && targetIndex < target.length) {
@@ -272,9 +297,13 @@ export class ReferenceOverlay {
           targetIndex++;
           continue;
         }
-        const insertedNumber = source.slice(sourceIndex).match(/^\d{1,4}/)?.[0];
-        if (!insertedNumber || /\d/.test(target[targetIndex]!)) break;
-        sourceIndex += insertedNumber.length;
+        if (!isDigit(source, sourceIndex) || isDigit(target, targetIndex)) break;
+        // an inserted number of up to 4 digits, as the old /^\d{1,4}/
+        let digits = 0;
+        while (digits < 4 && isDigit(source, sourceIndex)) {
+          sourceIndex++;
+          digits++;
+        }
       }
       if (targetIndex === target.length) return { start, end: sourceIndex };
     }

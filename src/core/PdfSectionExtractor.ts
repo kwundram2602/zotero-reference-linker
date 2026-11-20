@@ -46,7 +46,17 @@ const AUTHOR_START = new RegExp(
   `(?:^|\\n)(?=\\s*(?:${SURNAME},\\s*${INITIALS}|${SURNAME}${COMPACT_INITIALS}|${INITIALS_FIRST}${SURNAME}(?=\\s*[,;])))`,
   "gu"
 );
-const ORGANIZATION_START = /(?:^|\n)(?=\s*[A-Z][^\n,]{1,80}\b(?:Collaboration|Partnership)\b[^\n]*\b(?:19|20)\d{2}[a-z]?\b)/gu;
+// natbib with full given names: "Maxime Oquab, Timothée Darcet, …", "Huy V. Vo and …", "Laurens van der Maaten, …";
+// only where hanging indents mark the continuation lines (an indented "Fernandez, Daniel Haziza, …" never matches),
+// and two names in a row, so an address after the list ("New York City, NY 10038 …") starts no reference
+const NAME_WORD = `[A-ZÀ-ÖØ-Þ][\\p{L}'’‐-]+`;
+const FULL_NAME = `${NAME_WORD}(?:\\s+(?:${NAME_WORD}|[A-Z]\\.?|de|del|den|der|di|du|la|le|van|von)){0,3}?\\s+(${NAME_WORD})`;
+const FULL_NAME_AUTHOR = `${FULL_NAME}(?=\\s*,|\\s+(?:and|&)\\s)`;
+const FULL_NAME_START = new RegExp(
+  `(?:^|\\n)(?=${FULL_NAME}(?:\\s*,\\s*(?:and\\s+)?|\\s+(?:and|&)\\s+)${FULL_NAME}(?=\\s*[,.]|\\s+(?:and|&|et\\s+al)\\b))`,
+  "gu"
+);
+const ORGANIZATION_START =/(?:^|\n)(?=\s*[A-Z][^\n,]{1,80}\b(?:Collaboration|Partnership)\b[^\n]*\b(?:19|20)\d{2}[a-z]?\b)/gu;
 // "FAO, 2022. Land use …", "National Academies of Sciences, E., 2018. …": only where hanging indents mark the
 // continuation lines, so an unindented line is a new reference (see splitReferences)
 const ORGANIZATION_YEAR_START = /(?:^|\n)(?=[A-ZÀ-ÖØ-Þ][^\n,]{1,60},\s*(?:[A-Z]\.,\s*)?(?:19|20)\d{2}[a-z]?\.\s)/gu;
@@ -483,6 +493,7 @@ export class PdfSectionExtractor {
       ...[...text.matchAll(ORGANIZATION_START)].map(match => match.index!),
       ...[...text.matchAll(DITTO_START)].map(match => match.index!),
       ...(text.includes(CONTINUATION_LINE) ? [...text.matchAll(ORGANIZATION_YEAR_START)].map(match => match.index!) : []),
+      ...(text.includes(CONTINUATION_LINE) ? [...text.matchAll(FULL_NAME_START)].map(match => match.index!) : []),
       ...[...text.matchAll(YEAR_PAREN_START)].map(match => match.index!)
     ])].sort((a, b) => a - b);
     let previousAuthor: string | undefined;
@@ -519,6 +530,7 @@ export class PdfSectionExtractor {
     const surnameFirst = raw.match(new RegExp(`^(${SURNAME})(?:,\\s*${INITIALS}|${COMPACT_INITIALS})`, "u"))?.[1];
     if (surnameFirst) return surname(surnameFirst);
     const initialsFirst = raw.match(new RegExp(`^${INITIALS_FIRST}(${SURNAME})(?=\\s*[,;])`, "u"))?.[1];
-    return surname(initialsFirst);
+    if (initialsFirst) return surname(initialsFirst);
+    return surname(raw.match(new RegExp(`^${FULL_NAME_AUTHOR}`, "u"))?.[1]);
   }
 }

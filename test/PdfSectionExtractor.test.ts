@@ -130,6 +130,33 @@ describe("PdfSectionExtractor", () => {
     expect(result?.references[1]?.raw).toContain("Joshi");
   });
 
+  it("splits hanging-indent references whose authors have full given names", async () => {
+    const document: PdfDocument = {
+      numPages: 1,
+      async getPage() {
+        const item = (str: string, x: number) => ({ str, hasEOL: true, transform: [1, 0, 0, 1, x, 0] });
+        return { async getTextContent() { return { items: [
+          item("References", 55),
+          item("Maxime Oquab, Leon Bottou, Ivan Laptev, and Josef Sivic. Learning and transferring mid-level image", 55),
+          item("representations using convolutional neural networks. In CVPR, 2014.", 65),
+          item("Maxime Oquab, Timothée Darcet, Théo Moutakanni, Huy Vo, Marc Szafraniec, Vasil Khalidov, Pierre", 55),
+          item("Fernandez, Daniel Haziza, Francisco Massa, Alaaeldin El-Nouby, et al. DINOv2: Learning robust visual", 65),
+          item("features without supervision. TMLR, 2024.", 65),
+          item("Valentinos Pariza, Mohammadreza Salehi, Gertjan J Burghouts, Francesco Locatello, and Yuki M Asano.", 55),
+          item("Near, far: Patch-ordering enhances vision foundation models’ scene understanding. In ICLR, 2025.", 65),
+          // an author address after the list (R Journal): "New York City," is no author
+          item("New York City, NY 10038 julia.silge@gmail.com", 55)
+        ] }; } };
+      }
+    };
+    const result = await new PdfSectionExtractor().extract(document);
+    expect(result?.references.map(reference => reference.raw.slice(0, 20))).toEqual([
+      "Maxime Oquab, Leon B", "Maxime Oquab, Timoth", "Valentinos Pariza, M"
+    ]);
+    expect(result?.references[1]?.raw.replace(/\s+/g, " ")).toContain("DINOv2: Learning robust visual features without supervision");
+    expect(result?.references[1]?.firstAuthorHint).toBe("oquab");
+  });
+
   it("orders two-column references by column before splitting", async () => {
     const document: PdfDocument = {
       numPages: 1,

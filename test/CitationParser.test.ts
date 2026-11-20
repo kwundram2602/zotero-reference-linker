@@ -205,9 +205,15 @@ describe("CitationParser", () => {
     ["a title starting with 'PP'", "Xiang Long, Kaipeng Deng, Guanzhong Wang, Yang Zhang, Errui Ding, et al. PP-YOLO: An effective and efficient implementation of object detector. arXiv preprint arXiv:2007.12099, 2020. 2, 7", "PP-YOLO: An effective and efficient implementation of object detector"],
     ["a year after the title comma", "Y. Liu, Q. Hu, Y. Lei, K. Xu, J. Li, Y. Guo, Box2Seg: Learning Semantics of 3D Point Clouds with Box-Level Supervision, 2022. ArXiv:2201.02963 [cs].", "Box2Seg: Learning Semantics of 3D Point Clouds with Box-Level Supervision"],
     ["page numbers after the closing year", "K. He, X. Zhang, S. Ren, and J. Sun. Spatial pyramid pooling in deep convolutional networks for visual recognition. In ECCV. 2014. 1, 2", "Spatial pyramid pooling in deep convolutional networks for visual recognition"],
-    ["author-date after a colon", "Preissner, J.: 1978, The influence of the atmosphere on passive radiometric measurements, Proceedings of the Symposium on Millimeter Wave Propagation, Vol. 245, pp. 1-13.", "The influence of the atmosphere on passive radiometric measurements"]
+    ["author-date after a colon", "Preissner, J.: 1978, The influence of the atmosphere on passive radiometric measurements, Proceedings of the Symposium on Millimeter Wave Propagation, Vol. 245, pp. 1-13.", "The influence of the atmosphere on passive radiometric measurements"],
+    ["a one-word title closed by the year and back-reference pages", "[30] Oriane Siméoni, Huy V. Vo, Maximilian Seitzer, Federico  Baldassarre, Maxime Oquab, Cijo Jose, Vasil Khalidov, Marc Szafraniec, Seungeun Yi, Michaël Ramamonjisoa, Francisco Massa, Daniel Haziza, Luca Wehrstedt, Jianyuan Wang, Timothée Darcet, Théo Moutakanni, Leonel Sentana, Claire Roberts, Andrea Vedaldi, Jamie Tolan, John Brandt, Camille Couprie, Julien Mairal, Hervé Jégou, Patrick Labatut, and Piotr Bojanowski. DINOv3, 2025. 1, 3, 7", "DINOv3"]
   ])("finds the title with %s", (_, raw, title) => {
     expect(parser.parse(block(raw)).title).toBe(title);
+  });
+
+  it("never takes back-reference pages or a journal alone for the title", () => {
+    expect(parser.parse(block("Maxime Oquab, Timothée Darcet, and Piotr Bojanowski. Short, 2025. 1, 3, 7")).title ?? "").not.toMatch(/^[\d,\s]+$/);
+    expect(parser.parse(block("A. Author and B. Author. Nature, 2020.")).title).not.toBe("Nature");
   });
 
   it("never takes the 'In:' venue for the title", () => {

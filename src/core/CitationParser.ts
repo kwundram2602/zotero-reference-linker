@@ -148,6 +148,8 @@ export class CitationParser {
       // "Bishop, C. M. 1999. Bayesian PCA. In: …": a two-word title right after the year
       const afterYear = index > 0 && /\b(?:19|20)\d{2}[a-z]?\)?$/.test(segments[index - 1]!);
       if (words < (afterYear ? 2 : 3) || words > 40 || VENUE_SEGMENT.test(segment)) return false;
+      // "DINOv3, 2025. 1, 3, 7": the pages citing the reference (CVPR style) are not a title
+      if (!/\p{L}/u.test(segment)) return false;
       if (index === 0 && this.looksLikeAuthors(segment)) return false;
       return !/^\(?\s*(?:19|20)\d{2}[a-z]?\s*\)?$/i.test(segment);
     });
@@ -322,6 +324,10 @@ export class CitationParser {
       const candidate = this.clean(title);
       // the venue follows the title: past "In: …" / "In Proceedings …" no sentence is the title any more
       if (VENUE_SEGMENT.test(candidate)) return undefined;
+      // "… Bojanowski. DINOv3, 2025. 1, 3, 7": a one-word title closed by the year; it must look like a name
+      // (a digit or an inner capital: DINOv3, ImageNet, BERT), so "Authors. Nature, 2020." gives no title
+      const oneWord = candidate.match(/^(\S{3,}),\s*\(?(?:19|20)\d{2}[a-z]?\)?$/u)?.[1];
+      if (oneWord && /\p{L}/u.test(oneWord) && /\d|.\p{Lu}/u.test(oneWord) && !this.looksLikeAuthors(oneWord)) return oneWord;
       const words = candidate.split(/\s+/).filter(Boolean).length;
       if (words < 2 || words > 40 || (words === 2 && normalizeTitle(candidate).length < 12) || this.looksLikeAuthors(candidate)) continue;
       if (/^(?:[A-ZÀ-ÖØ-Þ]\.\s*|\(?\s*(?:19|20)\d{2})/u.test(candidate)) continue;

@@ -384,8 +384,8 @@ export class ReferenceOverlay {
     const style = this.doc.createElement("style");
     style.id = ReferenceOverlay.styleID;
     style.textContent = `
-      .reference-linker-hit { background: rgba(46, 204, 113, .30) !important; box-shadow: inset 0 -2px 0 rgb(30, 132, 73) !important; border-radius: 2px; cursor: pointer; }
-      .reference-linker-unmatched { background: rgba(66, 153, 225, .28) !important; box-shadow: inset 0 -2px 0 rgb(43, 108, 176) !important; border-radius: 2px; }
+      .reference-linker-hit { background: rgba(46, 204, 113, .30) !important; box-shadow: inset 0 -3px 0 rgb(16, 110, 50) !important; border-radius: 2px; cursor: pointer; }
+      .reference-linker-unmatched { background: rgba(66, 153, 225, .28) !important; box-shadow: inset 0 -3px 0 rgb(20, 80, 170) !important; border-radius: 2px; }
       .reference-linker-actionable { cursor: pointer; }
       .reference-linker-badge { position: absolute; z-index: 50; border: 1px solid rgba(20,100,45,.35); border-radius: 4px; padding: 1px 5px; background: #c9f1d4; color: #10391c; font: 600 10px/16px system-ui, sans-serif; cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,.2); }
       .reference-linker-badge:hover { background: #a7e6b8; }

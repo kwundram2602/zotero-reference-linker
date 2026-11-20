@@ -211,6 +211,13 @@ describe("CitationParser", () => {
     expect(parser.parse(block(raw)).title).toBe(title);
   });
 
+  it("finds a title that starts in lower case with a name and a colon", () => {
+    expect(parser.parse(block("Jinghao Zhou, Chen Wei, Huiyu Wang, Wei Shen, Cihang Xie, Alan Yuille, and Tao Kong. ibot: Image bert\npre-training with online tokenizer.  arXiv preprint arXiv:2111.07832 , 2021.")).title)
+      .toBe("ibot: Image bert pre-training with online tokenizer");
+    expect(parser.parse(block("Syed Waqas Zamir, Aditya Arora, Akshita Gupta, Salman Khan, Guolei Sun, Fahad Shahbaz Khan, Fan\nZhu, Ling Shao, Gui-Song Xia, and Xiang Bai. isaid: A large-scale dataset for instance segmentation in\naerial images, 2019.")).title)
+      .toBe("isaid: A large-scale dataset for instance segmentation in aerial images");
+  });
+
   it("never takes back-reference pages or a journal alone for the title", () => {
     expect(parser.parse(block("Maxime Oquab, Timothée Darcet, and Piotr Bojanowski. Short, 2025. 1, 3, 7")).title ?? "").not.toMatch(/^[\d,\s]+$/);
     expect(parser.parse(block("A. Author and B. Author. Nature, 2020.")).title).not.toBe("Nature");

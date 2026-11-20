@@ -312,7 +312,8 @@ export class CitationParser {
   }
 
   private extractAfterAuthors(citation: string): string | undefined {
-    for (const boundary of citation.matchAll(/\.\s+(?=[A-ZÀ-ÖØ-Þ\d])/gu)) {
+    // also a lower-case name before a colon: "… and Tao Kong. ibot: Image bert …", "wav2vec 2.0: …"
+    for (const boundary of citation.matchAll(/\.\s+(?=[A-ZÀ-ÖØ-Þ\d]|\p{Ll}[\p{L}\p{N}.-]*(?:\s+[\p{N}.]+)?:\s)/gu)) {
       const prefix = citation.slice(0, boundary.index);
       const remainder = citation.slice(boundary.index! + boundary[0].length);
       if (/\b[A-ZÀ-ÖØ-Þ]\s*$/u.test(prefix)

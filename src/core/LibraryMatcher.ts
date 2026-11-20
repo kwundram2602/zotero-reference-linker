@@ -118,7 +118,9 @@ export class LibraryMatcher {
     }
     const bibliographic = this.matchBibliographic(citation);
     if (bibliographic) return bibliographic;
-    if (!citation.normalizedTitle || citation.normalizedTitle.length < 12) return this.matchContained(citation) || { ambiguous: false };
+    if (!citation.normalizedTitle || citation.normalizedTitle.length < 12) {
+      return this.matchShortTitle(citation) || this.matchContained(citation) || { ambiguous: false };
+    }
 
     const exact = (this.byTitle.get(citation.normalizedTitle) || [])
       .map(record => this.scoreCandidate(record, citation, true))
@@ -173,6 +175,21 @@ export class LibraryMatcher {
       }];
     });
     return this.resolve(scored, "title-contained", citation);
+  }
+
+  /**
+   * A short title ("DINOv3", "BERT") alone says little: it matches a library title exactly (ignoring spaces and
+   * punctuation) only with the same first author and a year at most one apart (preprint and published version).
+   */
+  private matchShortTitle(citation: ParsedCitation): MatchOutcome | undefined {
+    if (!citation.normalizedTitle || !citation.firstAuthor || !citation.year) return undefined;
+    const records = this.byCompactTitle.get(this.compact(citation.normalizedTitle)) || [];
+    const scored = records.flatMap(record => {
+      const metadata = this.checkMetadata(record, citation);
+      if (!metadata?.authorMatch || this.yearDistance(record, citation) > 1) return [];
+      return this.scoreCandidate(record, citation, true) ?? [];
+    });
+    return this.resolve(scored, "title-exact", citation);
   }
 
   private matchBibliographic(citation: ParsedCitation): MatchOutcome | undefined {

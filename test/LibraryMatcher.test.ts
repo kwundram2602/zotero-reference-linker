@@ -370,6 +370,15 @@ describe("LibraryMatcher: versions and parse errors", () => {
     expect(matcher.match(parse("M. Lin, Q. Chen, and S. Yan. Network in network. In ICLR, 2019."))).toBeUndefined();
   });
 
+  it("matches a one-word title only with the same first author and year", async () => {
+    const reference = (year: number) => parse(`[30] Oriane Siméoni, Huy V. Vo, Maximilian Seitzer, Federico Baldassarre, Maxime Oquab, Cijo Jose, and Piotr Bojanowski. DINOv3, ${year}. 1, 3, 7`);
+    const matcher = await indexed([{ id: 1, title: "DINOv3", author: "Siméoni", year: 2025 }]);
+    expect(matcher.match(reference(2025))?.record.item.id).toBe(1);
+    expect(matcher.match(reference(2019))).toBeUndefined();
+    const otherAuthor = await indexed([{ id: 1, title: "DINOv3", author: "Oquab", year: 2025 }]);
+    expect(otherAuthor.match(reference(2025))).toBeUndefined();
+  });
+
   it("picks one of two versions of a work instead of calling it ambiguous", async () => {
     const matcher = await indexed([
       { id: 1, title: "You Only Look Once: Unified, Real-Time Object Detection", author: "Redmon", year: 2016, doi: "10.48550/arXiv.1506.02640", pdf: true },

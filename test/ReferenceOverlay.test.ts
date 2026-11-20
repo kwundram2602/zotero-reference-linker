@@ -42,6 +42,9 @@ describe("findIndexedReferenceMarkers", () => {
     expect(overlay.renderIndexedUnmatched(1)).toBe(true);
     expect(classes.every(values => values.has("reference-linker-unmatched"))).toBe(true);
     expect(style.textContent).toContain(".reference-linker-unmatched");
+    // underlined as well as colored, so a recognized entry stands out from the PDF's own highlights
+    expect(style.textContent).toMatch(/\.reference-linker-hit\s*\{[^}]*box-shadow:\s*inset/);
+    expect(style.textContent).toMatch(/\.reference-linker-unmatched\s*\{[^}]*box-shadow:\s*inset/);
   });
 });
 

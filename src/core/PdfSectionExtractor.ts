@@ -50,10 +50,11 @@ const AUTHOR_START = new RegExp(
 // only where hanging indents mark the continuation lines (an indented "Fernandez, Daniel Haziza, …" never matches),
 // and two names in a row, so an address after the list ("New York City, NY 10038 …") starts no reference
 const NAME_WORD = `[A-ZÀ-ÖØ-Þ][\\p{L}'’‐-]+`;
-const FULL_NAME = `${NAME_WORD}(?:\\s+(?:${NAME_WORD}|[A-Z]\\.?|de|del|den|der|di|du|la|le|van|von)){0,3}?\\s+(${NAME_WORD})`;
-const FULL_NAME_AUTHOR = `${FULL_NAME}(?=\\s*,|\\s+(?:and|&)\\s)`;
+// (not FULL_NAME: the vendored copy in ankiZot shares one scope with CitationParser's)
+const GIVEN_NAME_FIRST = `${NAME_WORD}(?:\\s+(?:${NAME_WORD}|[A-Z]\\.?|de|del|den|der|di|du|la|le|van|von)){0,3}?\\s+(${NAME_WORD})`;
+const FULL_NAME_AUTHOR = `${GIVEN_NAME_FIRST}(?=\\s*,|\\s+(?:and|&)\\s)`;
 const FULL_NAME_START = new RegExp(
-  `(?:^|\\n)(?=${FULL_NAME}(?:\\s*,\\s*(?:and\\s+)?|\\s+(?:and|&)\\s+)${FULL_NAME}(?=\\s*[,.]|\\s+(?:and|&|et\\s+al)\\b))`,
+  `(?:^|\\n)(?=${GIVEN_NAME_FIRST}(?:\\s*,\\s*(?:and\\s+)?|\\s+(?:and|&)\\s+)${GIVEN_NAME_FIRST}(?=\\s*[,.]|\\s+(?:and|&|et\\s+al)\\b))`,
   "gu"
 );
 const ORGANIZATION_START =/(?:^|\n)(?=\s*[A-Z][^\n,]{1,80}\b(?:Collaboration|Partnership)\b[^\n]*\b(?:19|20)\d{2}[a-z]?\b)/gu;
